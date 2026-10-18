@@ -1,0 +1,12 @@
+# downloads, generated assets and run outputs: recreate them with the README "Setup" commands
+data/
+assets_m/
+results/
+
+# Python
+__pycache__/
+*.pyc
+
+# editors
+.vscode/
+.idea/
