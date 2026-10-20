@@ -12,10 +12,8 @@ Conventions:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 import torch
 
 import isaaclab.sim as sim_utils
@@ -24,6 +22,8 @@ from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg, Rigid
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.sensors import TiledCameraCfg
 from isaaclab.utils import configclass
+
+from tower_rl.data.episode import Episode  # noqa: F401  (re-exported: scripts import it from here)
 
 PHYSICS_DT = 1.0 / 120.0
 CONTROL_SUBSTEPS = 4  # recorded commands are a 30 Hz zero-order hold over 120 Hz physics
@@ -52,65 +52,6 @@ EVAL_RENDER_CFG = dict(
         "/rtx/post/motionblur/enabled": False,
     },
 )
-
-
-@dataclass
-class Episode:
-    """Non-image arrays (``scripts/peek_hdf5_remote.py`` npz) and HDF5 attributes of one recorded episode."""
-
-    arrays: dict[str, np.ndarray]
-    attrs: dict
-
-    @classmethod
-    def load(cls, npz_path: str | Path, attrs_path: str | Path) -> Episode:
-        with np.load(npz_path) as z:
-            arrays = {k: z[k] for k in z.files}
-        return cls(arrays, json.loads(Path(attrs_path).read_text()))
-
-    def sim_attr(self, key: str):
-        """Attribute of the HDF5 ``sim`` group, JSON-decoded when it is a JSON string."""
-        v = self.attrs["__group__sim"][key]
-        try:
-            return json.loads(v) if isinstance(v, str) else v
-        except json.JSONDecodeError:
-            return v
-
-    @property
-    def num_frames(self) -> int:
-        return self.arrays["observations__qpos"].shape[0]
-
-    @property
-    def block_ids(self) -> list[str]:
-        return self.sim_attr("block_ids")
-
-    @property
-    def block_fixed(self) -> list[bool]:
-        return self.sim_attr("block_fixed_on_table")
-
-    @property
-    def provenance(self) -> dict:
-        return self.sim_attr("provenance_json")
-
-    @property
-    def readback(self) -> dict:
-        """Drive parameters the evaluator applied at runtime (millimetre-stage units)."""
-        return self.provenance["calibration"]["runtime_readback"]
-
-    @property
-    def phase_names(self) -> list[str]:
-        return self.sim_attr("phase_names")
-
-    @property
-    def target_mapping(self) -> list[dict]:
-        return self.sim_attr("target_mapping")
-
-    @property
-    def instruction(self) -> str:
-        return self.attrs.get("instruction", "")
-
-    @property
-    def task(self) -> str:
-        return self.attrs.get("public_task") or self.attrs.get("task_name", "")
 
 
 def arm_q_full(q8: torch.Tensor) -> torch.Tensor:
@@ -177,6 +118,9 @@ def robot_cfg(meta: dict, readback: dict, arm: str, q8_init) -> ArticulationCfg:
     )
 
 
+BLOCK_SOLVER_ITERATIONS = [16, 4]  # position, velocity (scripts may override before building the scene)
+
+
 def block_cfgs(meta: dict, episode: Episode, frame: int = 0) -> dict[str, RigidObjectCfg]:
     """One rigid block per recorded block id; foundation blocks are kinematic like in the evaluator."""
     poses = episode.arrays["sim__block_poses"][frame]
@@ -189,8 +133,8 @@ def block_cfgs(meta: dict, episode: Episode, frame: int = 0) -> dict[str, RigidO
                 usd_path=meta["block"]["wrapper"],
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(
                     kinematic_enabled=bool(episode.block_fixed[i]),
-                    solver_position_iteration_count=16,
-                    solver_velocity_iteration_count=4,
+                    solver_position_iteration_count=BLOCK_SOLVER_ITERATIONS[0],
+                    solver_velocity_iteration_count=BLOCK_SOLVER_ITERATIONS[1],
                     max_depenetration_velocity=1.0,
                 ),
             ),
@@ -300,6 +244,29 @@ def write_recorded_state(scene: InteractiveScene, episode: Episode, t: int, env_
     st[..., 3:7] = poses[:, [6, 3, 4, 5]]
     scene["blocks"].write_object_state_to_sim(st, env_ids=env_ids)
     scene.write_data_to_sim()
+
+
+def settle_recorded_state(scene: InteractiveScene, sim, episode: Episode, t: int = 0, seconds: float = 1.0,
+                          lift_m: float = 0.0005, env_ids: torch.Tensor | None = None):
+    """Write recorded frame ``t`` with movable blocks ``lift_m`` higher and let them settle for ``seconds`` while the
+    arms hold the recorded command (the generator also settles 1 s after a reset).
+
+    Teleporting the recorded poses directly can leave the keel-hulled blocks slightly interpenetrating; PhysX then
+    depenetrates them violently (8-19 mm jumps observed in Task 2-2 replays)."""
+    write_recorded_state(scene, episode, t, env_ids)
+    if lift_m > 0:
+        blk = scene["blocks"]
+        st = torch.cat([blk.data.object_link_pose_w, torch.zeros_like(blk.data.object_link_pose_w[..., :6])], -1).clone()
+        movable = torch.tensor([not f for f in episode.block_fixed], device=scene.device)
+        st[:, movable, 2] += lift_m
+        ids = slice(None) if env_ids is None else env_ids
+        blk.write_object_state_to_sim(st[ids], env_ids=env_ids)
+    q = torch.as_tensor(episode.arrays["leader__qpos"][t], dtype=torch.float32, device=scene.device)
+    for _ in range(int(round(seconds / PHYSICS_DT))):
+        set_arm_targets(scene, q, env_ids)
+        scene.write_data_to_sim()
+        sim.step(render=False)
+        scene.update(PHYSICS_DT)
 
 
 def measured_q16(scene: InteractiveScene, env: int = 0) -> torch.Tensor:

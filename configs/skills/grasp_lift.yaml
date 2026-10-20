@@ -1,0 +1,72 @@
+# grasp_lift skill (Step 5). Units m, rad unless named *_deg. Every scoring-relevant tunable lives here.
+arm: left                      # left | back (separate policies)
+num_envs: 4096
+episode_steps: 150             # 10 Hz policy steps (15 s)
+tiers: {D0: 0.25, D1: 0.25, D2: 0.5}   # per-reset mix of domain tiers (configs/tiers.yaml)
+reset:
+  mix: {pregrasp: 0.4, mid: 0.3, at_grasp: 0.3}   # start-pose modes (build file: pre-grasp only; v1 stalled)
+  tight: {frac: 0.8, pos_m: 0.03, rot_deg: 5.0}    # pregrasp mode, around the pre-grasp pose
+  wide: {frac: 0.2, pos_m: 0.08, rot_deg: 15.0}
+  min_height_above_grasp_m: 0.035   # finger tips (9 mm below the pinch) stay >= 1 cm above the block top
+  mid_height_m: [0.012, 0.035]      # mid mode: pinch this far above the grasp point, small lateral error
+  mid_lateral_m: 0.006
+  at_grasp: {jaw_m: 0.004, length_m: 0.010, z_m: 0.003, rot_deg: 3.0}   # open fingers straddling the block
+obs_noise:                     # actor block poses: per-episode offset + per-step jitter (perception stand-in)
+  episode_pos_m: 0.002
+  episode_yaw_deg: 2.0
+  step_pos_m: 0.001
+  step_yaw_deg: 0.5
+  # Step 8.1 perception model, off unless overridden: dropout_p (per step and block; the pose freezes for
+  # dropout_steps), outlier_p / outlier_m (one-step jump), e.g. --override '{"obs_noise": {"dropout_p": 0.02,
+  # "dropout_steps": 5, "outlier_p": 0.005, "outlier_m": 0.01}}'
+action:
+  pos_far_m: 0.02              # max target translation per step far from the block
+  pos_near_m: 0.005            # ... within near_radius of the grasp pose
+  near_radius_m: 0.02
+  far_radius_m: 0.06
+  rot_rad: 0.05
+  ema: 0.3                     # weight of the new action (smoothing)
+  max_lead_m: 0.03             # target may lead the measured pinch by at most this
+  grip_threshold: 0.0          # close when the gripper logit > threshold
+grasp:
+  contact_force_n: 0.5         # per finger, for "both pads touch the target"
+  lift_success_m: 0.08         # above its initial height
+  hold_steps: 5                # held for 0.5 s
+quality:                       # success needs a near-canonical grasp (else "bad grasp": episode ends with a penalty)
+  x_m: 0.010                   # pinch offset along the block from its centre (v3 back arm: 25 mm, 15 deg -> its
+  z_m: 0.005                   # pre-place pose was beyond j7 in Task 3-3); vertical offset on the block
+  rot_deg: 6.0                 # gripper rotation from the canonical orientation (fingers interchangeable)
+reward:
+  align: 1.0                   # keypoint squash, scales [50, 2] + [100, 0]
+  contact: 1.0
+  grasp: 2.0
+  close_aligned: 0.5           # requesting "close" while the keypoints are within 1 cm (exploration aid)
+  lift: 3.0
+  success: 20.0
+  success_per_remaining_step: 8.0   # > max per-step shaping (~7.25): finishing early beats hovering (v2 hovered at 3.0)
+  disturb_per_cm: 1.0          # per step, sum over non-target blocks of max(0, d - 3 mm) / 1 cm
+  disturb_terminal: 10.0       # any non-target block > 10 mm (the challenge's disturbance rule)
+  drop: 5.0
+  bad_grasp: 5.0               # lifted and held with a grasp outside the quality gate
+  action_rate: 0.01
+  joint_limit: 0.1
+termination: {disturb_mm: 10.0, drop_after_lift_m: 0.02, tilt_deg: 45.0}
+ppo:
+  num_steps_per_env: 24
+  max_iterations: 1500
+  num_learning_epochs: 5
+  num_mini_batches: 4
+  learning_rate: 1.0e-4
+  schedule: adaptive
+  desired_kl: 0.016
+  entropy_coef: 0.006
+  gamma: 0.99
+  lam: 0.95
+  clip_param: 0.2
+  value_loss_coef: 1.0
+  max_grad_norm: 1.0
+  init_noise_std: 0.6
+  actor_hidden_dims: [256, 256, 128]
+  critic_hidden_dims: [512, 256, 128]
+  activation: elu
+  save_interval: 100

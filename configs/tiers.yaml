@@ -1,0 +1,44 @@
+# Domain tiers (Step 3.3). Ranges are uniform +- values unless given as [lo, hi]. Units: m, deg.
+# D1 reproduces the evaluator's documented robustness cases (docs "Task prompts", rules v1.3): one case per episode.
+# Foundations, destination anchors (goals), robot dynamics and cameras are never randomized (docs: "Fixed").
+nominal: &nominal
+  assembly_xy_m: 0.003        # generator tower jitter (movable assembly relative to its foundation)
+  assembly_yaw_deg: 0.0
+  layer_xy_m: 0.0             # per supported layer, on top of the assembly shift
+  layer_yaw_deg: 0.0
+  block_xy_m: 0.002           # generator centre-block jitter, per block
+  mass_scale: [1.0, 1.0]      # shared multiplier for all movable blocks
+  per_block_mass: null        # [lo, hi] independent multiplier per block (overrides mass_scale)
+  friction_static: null       # [lo, hi] block friction; null = asset nominal (0.40 / 0.23)
+  friction_dynamic: null
+  mixed_friction: false       # per block: either the slippery or the high-friction range
+  light_scale: [1.0, 1.0]
+  color_temp_k: null
+  light_azimuth_deg: 0.0
+
+tiers:
+  D0:
+    cases: {nominal: {}}
+  D1:
+    cases:
+      nominal: {}
+      lightweight: {mass_scale: [0.4, 0.7]}
+      heavy: {mass_scale: [1.4, 2.0]}
+      uneven_weights: {per_block_mass: [0.4, 2.0]}
+      slippery: {friction_static: [0.15, 0.30], friction_dynamic: [0.07, 0.14]}
+      high_friction: {friction_static: [0.9, 1.3], friction_dynamic: [0.5, 0.8]}
+      shifted_assembly: {assembly_xy_m: 0.015, assembly_yaw_deg: 10.0}
+      irregular_layers: {layer_xy_m: 0.008, layer_yaw_deg: 5.0}
+      lighting: {light_scale: [0.25, 2.0], color_temp_k: [3000, 8500], light_azimuth_deg: 60.0}
+      combined: {per_block_mass: [0.5, 1.8], mixed_friction: true, assembly_xy_m: 0.010, assembly_yaw_deg: 8.0,
+                 light_scale: [0.4, 1.6]}
+  D2:   # training superset: every factor at once, ranges widened ~20 %
+    cases:
+      everything: {assembly_xy_m: 0.018, assembly_yaw_deg: 12.0, layer_xy_m: 0.010, layer_yaw_deg: 6.0,
+                   per_block_mass: [0.35, 2.2], friction_static: [0.13, 1.4], friction_dynamic: [0.06, 0.9],
+                   light_scale: [0.25, 2.0], color_temp_k: [3000, 8500], light_azimuth_deg: 60.0}
+
+# robot-side randomization used in skill training only (not an evaluator case: "robot dynamics fixed")
+robot:
+  finger_friction_static: [1.0, 2.6]     # covers the Sep-9 data station (~1.2) and the published station (2.4)
+  finger_friction_dynamic_ratio: [0.8, 0.85]

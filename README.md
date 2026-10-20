@@ -101,6 +101,99 @@ python scripts/validate_isaaclab_scene.py --headless --enable_cameras --mode ren
     --episode t23_ep1 --out /tmp/rbench.json
 ```
 
+## Agentic teacher (privileged)
+
+Built from `~/Documents/corl_challenge/TOWER_BUILD_INSTRUCTIONS.md`; progress, acceptance numbers and every deviation
+are in `BUILDLOG.md`. The teacher is a typed graph of skill calls per variant (`tower_rl/graph/graphs/*.json`)
+interpreted by a deterministic executor: planned transits and parks (IK + gravity-sag compensation), and two
+contact skills, `grasp_lift` and `place_release`, trained with PPO on privileged critics but camera-estimable actor
+inputs. Until a skill is trained for an arm, the executor uses a planned fallback with the same checkpoints.
+
+```bash
+# Step 1: data subset (non-image arrays over HTTP range requests), layouts, events, grasp geometry
+python -I scripts/fetch_subset.py --per_variant 10
+python -I scripts/build_layouts.py            # configs/layouts/<variant>.yaml + results/layouts/*.png
+python -I scripts/analyze_subset.py           # results/data/subset_analysis.json
+python -I scripts/build_posture_priors.py     # configs/skills/posture_priors.yaml
+python scripts/extract_robot_model.py         # configs/robot/nero.json (chain, inertials, evaluator drives)
+
+# Step 2: scenes (light skill scene on GPU; station scene on CPU = evaluator-faithful)
+python -m pytest --isaac tests/test_scenes.py
+python scripts/replay_demo.py --headless --device cpu --variant task2-2_cross_tower_transfer_2 --num_replays 2 \
+    --out results/calibration/replay_task2-2_cpu.json
+
+# Step 3: local evaluator (metrics, operation tracker, chunked runner)
+python scripts/evaluate_policy.py --headless --device cpu --variant task2-2_cross_tower_transfer_2 --policy replay \
+    --rate_hz 30 --replay_episodes data/subset/task2-2_cross_tower_transfer_2/*.npz --finger_friction 1.2 1.0
+python scripts/sweep_tolerance.py --headless --device cpu --variant task2-3_cross_tower_transfer_3
+
+# Steps 5-6: skills (GPU, light scene); oracle sanity checks; deterministic evaluation per tier
+python scripts/oracle_skill.py --headless --skill grasp_lift --arm left --num_envs 256
+python scripts/train_skill.py --headless --skill grasp_lift --arm left --num_envs 4096 --max_iterations 1500
+python scripts/evaluate_skill.py --headless --skill grasp_lift --arm left --checkpoint <run dir> --tier D1 --episodes 500
+#   [--perception_noise [--noise '{"bias_pos_m": 0.003}']]   # Step 8.1: provisional perception model on the actor
+
+# Step 7: rehearsal of the whole teacher (CPU station scene) -> results/rehearsal/<variant>/<tier>/feedback.md
+python scripts/rehearse.py --headless --device cpu --variant task1-3_tower_transfer_3 --tiers D0 D1 --episodes 8 \
+    [--bundle bundle] [--perception_noise]
+python scripts/freeze_bundle.py --skill grasp_lift:left=<run dir> ...   # bundle/ + bundle.tar.gz + sha256
+# all variants in parallel processes (Step 7 acceptance N >= 100; Step 8: --perception_noise, --bundle_configs
+# = configs from the bundle (export check), --rate_hz 30); summary with Step 7 pass/fail per cell
+python scripts/rehearse_many.py --bundle <bundle> --episodes 100 --parallel 4 --out_root results/rehearsal_final/<b>
+# diagnose a failure signature from feedback.md (example (seed 1000003, ...) = rehearsal seed 1000, batch 0, env 3);
+# rehearsals are deterministic for a fixed code + bundle, so the env reproduces exactly
+python scripts/trace_episode.py --headless --device cpu --variant task2-2_cross_tower_transfer_2 --tier D1 \
+    --seed 1000 --env 3 --bundle <bundle> --out results/traces/t22_1000003.jsonl [--fine 17.3 18.0] [--video f.mp4]
+# watch the teacher solve a task: mp4 of the four evaluator cameras, real time (one frame per 0.1 s row), or live in
+# the Isaac Sim window (--live, without --headless; RTX rendering every row)
+python scripts/trace_episode.py --headless --device cpu --variant task2-3_cross_tower_transfer_3 --tier D0 \
+    --num_envs 1 --seed 1 --bundle results/bundles/teacher_v6 --video results/videos/teacher_t23.mp4 --cam_scale 1.0
+python scripts/drop_test.py --headless --device cpu --n 64      # block-release statistics vs height (CPU or GPU)
+python scripts/release_test.py --headless --device cpu          # the planned place's release, many times
+# Step 8.1: where perception noise turns into placement error (per place: executor estimates vs simulator truth;
+# --probe_bias for fixed biases, --graph_set to try graph settings), then a per-arm summary
+python scripts/noise_diag.py --headless --device cpu --variant task3-3_vertical_stacking_3 --bundle <bundle> \
+    --noise '{"bias_pos_m": 0.001, "bias_yaw_deg": 1.0, "shared_pos_m": 0.003, "shared_yaw_deg": 3.0}' \
+    --out results/noise_diag/t33.jsonl
+python -I scripts/summarize_noise_diag.py results/noise_diag/t33.jsonl
+```
+
+Grasp quality: `grasp_lift` succeeds only for a near-canonical grasp (pinch within 10 mm along the block and 5 mm
+vertically of the centred grasp, gripper within 6 deg of the canonical orientation), measured in the block frame by
+`tower_rl.grasp.grasp_relation_error` (a lifted block hangs tilted with the gripper, so world-referenced comparisons
+are wrong); `place_release` trains with held offsets up to that gate. Transits aim at the nearest reachable pose of
+their via-point (`reachable_pose`), so a via-point a joint limit makes unreachable cannot stall the arrival check.
+
+Held blocks: from the moment a gripper holds a block (before it moves) until it is released, the executor estimates
+that block's pose as pinch x offset (`EnvRun.block_est`), refreshed only by confident, consistent measurements, so a
+perception dropout of the moving block (the one the fingers occlude) cannot mislead the skills or the release pose.
+
+Perceived poses (`tower_rl.graph.estimates`): every call feeds each block's pose to a rest-pose estimate (median of
+its recent mutually consistent poses; a one-call outlier is held back, two consecutive far poses mean the block moved,
+dropouts with confidence < 0.5 are ignored). Targets computed once (pre-grasps, goals from the destination foundation,
+`arm_clear`, reachability) use these estimates; the skills' observations stay per call, as in training. A gripped block
+is attached from its rest estimate; the place check decides on the median of a window of perceived poses once the
+block is at rest (window medians, not per-call displacement, which perception jitter breaks). Goal orientation comes
+from the foundation blocks' perceived yaws (an orientation error common to all blocks cancels against the held
+block's), goal positions from the line through their centres. Graph `"perception": {"jaw_to_goal": w}` moves the share
+w of the held block's perceived offset along the jaw (perception error: the fingers centre the block, and the place
+policies ignore that offset) from the block to the place policy's goal: w = 1 cancels errors shared by all blocks,
+w = 0 suits independent per-block errors; graphs v5 use 0.5 until the pose estimator's errors are measured.
+
+CPU scripts set `torch.set_num_threads(1)`: torch's default threads on the executor's tiny tensors cost ~6 cores per
+process and made rehearsals slower.
+
+Executor failure handling (graph `on_fail`, default `retry`): a failure restarts the transfer with the gripper open,
+up to `graph.retries` times, then skips to the next node of a later transfer (which may be the park that clears the
+arm); a transport failure while the block is still in the gripper retries from the pre-place transit; a held transit
+fails as soon as the gripper closes past the block width; a transfer whose block fell off the table is skipped; a
+pre-grasp via-point far out of reach fails at once; a near-miss place (<= `arm_switch_m`, 15 mm) that its own arm
+cannot re-grasp is re-grasped and re-placed by the other arm (inserted park / transit / grasp / transit / place /
+park nodes). Before every transit the other arm must be clear of the target tower (`arm_clear`), else it is parked.
+
+Pure-python tests (no Isaac): `python -m pytest` (kinematics vs the dataset, layouts, reachability of every via-point,
+metrics, operation tracker, graphs, transit limits, executor determinism).
+
 ## Development
 
 ### Layout
@@ -115,7 +208,15 @@ python scripts/validate_isaaclab_scene.py --headless --enable_cameras --mode ren
 | `scripts/smoke_native_isaacsim.py` | Opens a published task layer natively (mm stage) in plain Isaac Sim |
 | `scripts/peek_hdf5_remote.py`, `fetch_frames_remote.py`, `extract_meta_remote.py` | Read TOWER-SimData over HTTP range requests (one episode's arrays, single JPEG frames, metadata of many episodes) |
 | `scripts/inspect_station.py`, `inspect_xforms.py` | Static USD inspection with plain `pxr` |
-| `data/`, `assets_m/`, `results/` | Downloads, generated wrappers, run outputs (git-ignored) |
+| `tower_rl/geometry.py`, `kinematics.py`, `control.py` | Torch rigid-body math, Nero FK / Jacobian / DLS IK / gravity model, 10 Hz arm + gripper controllers (no Isaac imports) |
+| `tower_rl/data/` | Episode files, remote reads, gripper events, layouts, success semantics, demo grasp geometry |
+| `tower_rl/{tower,domain,grasp,postures}.py` | Tower sampling per stage and tier, domain samples, canonical gripper poses, IK posture priors |
+| `tower_rl/sim/` | Isaac Lab asset configs, light skill scene, layout-driven station scene + `StationWorld` runtime |
+| `tower_rl/eval/` | Metrics (TSR/GSR/PSR/LHPR/ODR), operation tracker, chunked runner, perception-noise model |
+| `tower_rl/skills/` | Skill envs (`grasp_lift`, `place_release`), shared actor observations, transit planner, PPO config, TorchScript export |
+| `tower_rl/graph/` | `State`/`SkillCall` interface, graph builder + JSONs, executor, rehearsal reports |
+| `configs/` | Physics, scene, tiers, robot model, layouts, skill YAMLs (every scoring-relevant tunable) |
+| `BUILDLOG.md` | Dated build log: acceptance numbers and deviations from the build instructions |
 
 Scripts put the repository root on `sys.path`, so nothing needs to be pip-installed. Isaac Lab modules (and therefore
 `tower_rl.scene`) can only be imported after `AppLauncher` has started the app; follow the pattern at the top of
@@ -172,3 +273,11 @@ reference values (RTX A5000, deterministic on the same machine):
 - The challenge-task USDA files are runtime-generated stubs; layouts and goals come from the SimData metadata
   (`sim/block_poses`, `target_mapping`).
 - Data revisions: TOWER-Assets `538d8b1`, TOWER-SimData `1a59248` (same files as the docs-pinned `5ad6adc9`).
+- **The evaluator runs CPU PhysX.** Open-loop replays on CPU reproduce the recordings (final block poses within 0.9 mm);
+  GPU PhysX makes the keel-hulled blocks creep up to 15 mm (top cross blocks). Train on GPU, rehearse / evaluate on
+  CPU (`--device cpu`).
+- The massless passive `gripper_link` gets PhysX's default 1 kg; with the soft evaluator gains the back elbow sags
+  0.085 rad at rest. All controllers command `q_des - tau_g(q_des) / kp` (`ArmKinematics.sag_compensated_command`).
+- The pinch point is `gripper_base + (0, 0, 0.178)`; demos grasp centred, jaw across the block's width, approach
+  tilted 12 deg (left) / 5.5 deg (back) about the jaw axis; via-points at 6 cm (pre-grasp) and 5 cm (pre-place).
+- 10 Hz rows are held 0.1 s: replaying the demos at 10 Hz drops blocks in transport (fine at 30 Hz).

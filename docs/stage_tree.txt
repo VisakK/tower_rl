@@ -1,0 +1,120 @@
+source station: /home/visakii/Documents/tower_rl/data/TOWER-Assets/station/station.usdz
+meter wrapper:  /home/visakii/Documents/tower_rl/assets_m/tower_station_m.usda
+source metersPerUnit=0.001 kilogramsPerUnit=1.0 upAxis=Z; wrapper scale 0.001 -> meters
+unreset prims (resetXformStack replaced by explicit matrices): ['/PNP_DUALD1200_STATION/StationModel/StaticCurtains', '/PNP_DUALD1200_STATION/StationModel/StationLighting', '/PNP_DUALD1200_STATION/StationModel/InstalledRobots', '/PNP_DUALD1200_STATION/StationModel/InstalledRobots/StandA_Robot', '/PNP_DUALD1200_STATION/StationModel/InstalledRobots/StandB_Robot']
+
+== hierarchy (depth <= 4 below /TowerStation/Model; meshes and materials omitted)
+Model [Xform]
+  StationModel [Xform]
+    tn__b4b08Ou03GRNY0xCb0 [Xform]
+      StationBasePlate [Xform]
+      LiftColumnA_BasePlate [Xform]
+      LiftColumnA_TopPlate [Xform]
+      UpperFrame_CrossRail_01 [Xform]
+      UpperFrame_SideRail [Xform]
+      StationFrameAndCabinet [Xform]
+        Parts [Xform]
+      LiftColumnB_BasePlate [Xform]
+      LiftColumnB_TopPlate [Xform]
+      Worktop [Xform]
+      LiftColumnA_OuterHousing [Xform]
+      LiftColumnA_MiddleSleeve [Xform]
+      LiftColumnA_InnerColumn [Xform]
+      LiftColumnB_OuterHousing [Xform]
+      LiftColumnB_MiddleSleeve [Xform]
+      LiftColumnB_InnerColumn [Xform]
+    StaticCurtains [Xform]
+      Curtain_Front [Xform]
+      Curtain_Right [Xform]
+      Curtain_Back [Xform]
+    StationLighting [Xform]
+      TopWhitePlaneLight [RectLight]
+    InstalledRobots [Xform]
+      StandA_Robot [Xform]
+        NeroRobotWithWristCamera [Xform]
+      StandB_Robot [Xform]
+        NeroRobotWithWristCamera [Xform]
+  CameraAlignment [Xform]
+    low_camera [Camera]
+    high_camera [Camera]
+  TabletopPlacement [Xform]
+  ReplayTabletopCollision [Cube] ['Collision']
+  LifterControls [Scope]
+    left_joint8 [Xform]
+    back_joint8 [Xform]
+
+== articulation roots
+  /TowerStation/Model/StationModel/InstalledRobots/StandA_Robot/NeroRobotWithWristCamera/root_joint
+  /TowerStation/Model/StationModel/InstalledRobots/StandB_Robot/NeroRobotWithWristCamera/root_joint
+
+== arm 'left': /TowerStation/Model/StationModel/InstalledRobots/StandA_Robot/NeroRobotWithWristCamera
+  base_link world: pos=[-0.1165, -0.288, 0.0] quat_wxyz=[0.0, 0.0, 0.0, 1.0]
+  joint world_to_base_link     PhysicsFixedJoint       
+  joint joint1                 PhysicsRevoluteJoint     limits(rad)=(-2.7053, 2.7053)
+  joint joint2                 PhysicsRevoluteJoint     limits(rad)=(-1.7400, 1.7400)
+  joint joint3                 PhysicsRevoluteJoint     limits(rad)=(-2.7500, 2.7500)
+  joint joint4                 PhysicsRevoluteJoint     limits(rad)=(-1.0100, 2.1400)
+  joint joint5                 PhysicsRevoluteJoint     limits(rad)=(-2.7500, 2.7500)
+  joint joint6                 PhysicsRevoluteJoint     limits(rad)=(-0.7300, 0.9500)
+  joint joint7                 PhysicsRevoluteJoint     limits(rad)=(-1.5708, 1.5708)
+  joint gripper_flange_joint   PhysicsFixedJoint       
+  joint gripper_base_joint     PhysicsFixedJoint       
+  joint gripper                PhysicsPrismaticJoint    limits(m)=(0.0000, 0.1000)
+  joint gripper_joint1         PhysicsPrismaticJoint    limits(m)=(-0.0100, 0.0600)
+  joint gripper_joint2         PhysicsPrismaticJoint    limits(m)=(-0.0600, 0.0100)
+  gripper_link1 physics material (composed): None
+  gripper_link2 physics material (composed): None
+  gripper_link1 physics material (source, outside defaultPrim): ['/__DualReplayGripperPhysicsMaterial']
+
+== arm 'back': /TowerStation/Model/StationModel/InstalledRobots/StandB_Robot/NeroRobotWithWristCamera
+  base_link world: pos=[0.381, -0.774, 0.0] quat_wxyz=[-0.7071068, 0.0, 0.0, 0.7071068]
+  joint world_to_base_link     PhysicsFixedJoint       
+  joint joint1                 PhysicsRevoluteJoint     limits(rad)=(-2.7053, 2.7053)
+  joint joint2                 PhysicsRevoluteJoint     limits(rad)=(-1.7400, 1.7400)
+  joint joint3                 PhysicsRevoluteJoint     limits(rad)=(-2.7500, 2.7500)
+  joint joint4                 PhysicsRevoluteJoint     limits(rad)=(-1.0100, 2.1400)
+  joint joint5                 PhysicsRevoluteJoint     limits(rad)=(-2.7500, 2.7500)
+  joint joint6                 PhysicsRevoluteJoint     limits(rad)=(-0.7300, 0.9500)
+  joint joint7                 PhysicsRevoluteJoint     limits(rad)=(-1.5708, 1.5708)
+  joint gripper_flange_joint   PhysicsFixedJoint       
+  joint gripper_base_joint     PhysicsFixedJoint       
+  joint gripper                PhysicsPrismaticJoint    limits(m)=(0.0000, 0.1000)
+  joint gripper_joint1         PhysicsPrismaticJoint    limits(m)=(-0.0100, 0.0600)
+  joint gripper_joint2         PhysicsPrismaticJoint    limits(m)=(-0.0600, 0.0100)
+  gripper_link1 physics material (composed): None
+  gripper_link2 physics material (composed): None
+  gripper_link1 physics material (source, outside defaultPrim): ['/__DualReplayGripperPhysicsMaterial']
+
+== physics materials (source station)
+  /PNP_DUALD1200_STATION/ReplayTaskBlocks/Foundation01/PhysicsMaterials/Wood: static=0.4000000059604645 dynamic=0.23000000417232513 restitution=0.019999999552965164 combine=default(average)
+  /PNP_DUALD1200_STATION/ReplayTaskBlocks/Foundation02/PhysicsMaterials/Wood: static=0.4000000059604645 dynamic=0.23000000417232513 restitution=0.019999999552965164 combine=default(average)
+  /PNP_DUALD1200_STATION/ReplayTaskBlocks/Foundation03/PhysicsMaterials/Wood: static=0.4000000059604645 dynamic=0.23000000417232513 restitution=0.019999999552965164 combine=default(average)
+  /PNP_DUALD1200_STATION/ReplayTaskBlocks/RotatedBase01/PhysicsMaterials/Wood: static=0.4000000059604645 dynamic=0.23000000417232513 restitution=0.019999999552965164 combine=default(average)
+  /PNP_DUALD1200_STATION/ReplayTaskBlocks/RotatedBase02/PhysicsMaterials/Wood: static=0.4000000059604645 dynamic=0.23000000417232513 restitution=0.019999999552965164 combine=default(average)
+  /PNP_DUALD1200_STATION/ReplayTaskBlocks/RotatedBase03/PhysicsMaterials/Wood: static=0.4000000059604645 dynamic=0.23000000417232513 restitution=0.019999999552965164 combine=default(average)
+  /__DualReplayGripperPhysicsMaterial: static=2.4000000953674316 dynamic=2.0 restitution=0.0 combine=default(average)
+  /__DualReplayGripperPhysicsMaterial: static=2.4000000953674316 dynamic=2.0
+
+== task blocks (ReplayTaskBlocks; inactive in the wrapper, read from the source in meters)
+  Foundation01     pos=(0.3760, -0.2770, 0.0150) quat_wxyz=(0.7071, 0.0000, 0.0000, -0.7071) aabb=(0.0500, 0.1500, 0.0300) kinematic=True
+  Foundation02     pos=(0.4260, -0.2770, 0.0150) quat_wxyz=(0.7071, 0.0000, 0.0000, -0.7071) aabb=(0.0500, 0.1500, 0.0300) kinematic=True
+  Foundation03     pos=(0.4760, -0.2770, 0.0150) quat_wxyz=(0.7071, 0.0000, 0.0000, -0.7071) aabb=(0.0500, 0.1500, 0.0300) kinematic=True
+  RotatedBase01    pos=(0.1240, -0.5250, 0.0150) quat_wxyz=(0.7071, 0.0000, 0.0000, -0.7071) aabb=(0.0500, 0.1500, 0.0300) kinematic=True
+  RotatedBase02    pos=(0.1740, -0.5250, 0.0150) quat_wxyz=(0.7071, 0.0000, 0.0000, -0.7071) aabb=(0.0500, 0.1500, 0.0300) kinematic=True
+  RotatedBase03    pos=(0.2240, -0.5250, 0.0150) quat_wxyz=(0.7071, 0.0000, 0.0000, -0.7071) aabb=(0.0500, 0.1500, 0.0300) kinematic=True
+  block wrapper: {'wrapper': '/home/visakii/Documents/tower_rl/assets_m/tower_block_station_m.usda', 'aabb_m': [[-0.07500000298023224, -0.02500000037252903, -0.014999999664723873], [0.07500000298023224, 0.02500000037252903, 0.014999999664723873]], 'mass': 0.10559999942779541, 'friction_static_dynamic': [0.4000000059604645, 0.23000000417232513]}
+
+== cameras
+  /TowerStation/Model/StationModel/InstalledRobots/StandA_Robot/NeroRobotWithWristCamera/gripper_base/WristCameraMount/camera_stand_link/d435_camera_link/camera_link/camera_color_frame/camera_color_optical_frame/wrist_camera
+     pos=(-0.1797, -0.3014, 0.7925) quat_wxyz=(0.1303, 0.7194, -0.6800, -0.0551) yaw=-86.0deg focal=19.892 h_ap=20.955
+  /TowerStation/Model/StationModel/InstalledRobots/StandB_Robot/NeroRobotWithWristCamera/gripper_base/WristCameraMount/camera_stand_link/d435_camera_link/camera_link/camera_color_frame/camera_color_optical_frame/wrist_camera
+     pos=(0.3780, -0.8482, 0.7939) quat_wxyz=(0.1725, 0.9850, 0.0058, -0.0060) yaw=0.5deg focal=19.892 h_ap=20.955
+  /TowerStation/Model/CameraAlignment/low_camera
+     pos=(-0.1515, -0.8783, 0.9563) quat_wxyz=(0.3940, -0.0942, -0.3664, 0.8376) yaw=132.7deg focal=18.000 h_ap=18.974
+  /TowerStation/Model/CameraAlignment/high_camera
+     pos=(0.8755, -0.0348, 0.5582) quat_wxyz=(0.8332, -0.3619, 0.1605, -0.3859) yaw=-49.4deg focal=18.000 h_ap=18.979
+
+== tabletop collider
+  ReplayTabletopCollision aabb (m): [[0.0, -0.6600000313483179, -0.025000001187436283], [0.9600000455975533, 0.0, 0.0]]
+
+== physics scene (source)

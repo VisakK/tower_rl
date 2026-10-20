@@ -1,0 +1,70 @@
+# place_release skill (Step 6). Units m, rad unless named *_deg.
+arm: left
+num_envs: 4096
+episode_steps: 150
+tiers: {D0: 0.25, D1: 0.25, D2: 0.5}
+reset:
+  start_height_m: [0.01, 0.06]   # above the release pose (reverse curriculum: low starts are easy)
+  tight: {frac: 0.8, pos_m: 0.02, rot_deg: 5.0}
+  wide: {frac: 0.2, pos_m: 0.05, rot_deg: 12.0}
+  grasp_slip_m: 0.003            # held block offset from the centred grasp (per axis sigma, x and z)
+  grasp_slip_deg: 2.0
+  grasp_offset_wide: {frac: 0.5, x_m: 0.010, z_m: 0.005, rot_deg: 6.0}   # the rest: as wide as grasp_lift's quality gate
+  placed_xy_err_m: 0.003         # earlier transfers already placed with this error
+  placed_yaw_err_deg: 2.0
+obs_noise:
+  episode_pos_m: 0.002
+  episode_yaw_deg: 2.0
+  step_pos_m: 0.001
+  step_yaw_deg: 0.5
+  # Step 8.1 perception model, off unless overridden: dropout_p (per step and block; the pose freezes for
+  # dropout_steps), outlier_p / outlier_m (one-step jump), e.g. --override '{"obs_noise": {"dropout_p": 0.02,
+  # "dropout_steps": 5, "outlier_p": 0.005, "outlier_m": 0.01}}'; shared_pos_m / shared_yaw_deg: a per-episode error
+  # common to every perceived pose and the goal (tried for the left place, v3s: rejected, BUILDLOG Step 8.1 round 2)
+action:
+  pos_far_m: 0.015
+  pos_near_m: 0.004
+  near_radius_m: 0.015           # block-to-goal distance below which steps shrink
+  far_radius_m: 0.05
+  rot_rad: 0.04
+  ema: 0.3
+  max_lead_m: 0.03
+  grip_threshold: -0.3           # gripper stays closed unless the logit < -0.3 (holding is the default; early release drops)
+place:
+  tol_pos_m: 0.005
+  tol_yaw_deg: 5.0
+  tol_z_m: 0.010
+  settle_steps: 10               # 1.0 s after the release
+  static_speed: 0.01
+  retreat_m: 0.03                # pinch must rise this much above the release height before the check counts
+reward:
+  track: 1.0                     # block keypoints vs goal keypoints, squash scales [50, 2] + [100, 0]
+  descend: 1.0                   # aligned (xy < 5 mm) and low
+  success: 20.0
+  success_per_remaining_step: 6.0   # > max per-step shaping (~3.5)
+  success_precision: 30.0        # x (1 - xy error / tol) at success: placements at 4.9 mm of 5 fall out once loaded
+  fail: 5.0
+  disturb_per_cm: 1.0
+  disturb_terminal: 10.0
+  action_rate: 0.01
+  joint_limit: 0.1
+termination: {disturb_mm: 10.0, tilt_deg: 30.0, drop_below_goal_m: 0.02}
+ppo:
+  num_steps_per_env: 24
+  max_iterations: 1500
+  num_learning_epochs: 5
+  num_mini_batches: 4
+  learning_rate: 1.0e-4
+  schedule: adaptive
+  desired_kl: 0.016
+  entropy_coef: 0.006
+  gamma: 0.99
+  lam: 0.95
+  clip_param: 0.2
+  value_loss_coef: 1.0
+  max_grad_norm: 1.0
+  init_noise_std: 0.5
+  actor_hidden_dims: [256, 256, 128]
+  critic_hidden_dims: [512, 256, 128]
+  activation: elu
+  save_interval: 100

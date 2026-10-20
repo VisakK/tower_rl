@@ -1,0 +1,25 @@
+# Simulation timing and physics shared by the skill scene and the station scene.
+# Matches the evaluator as recovered from the SimData metadata (provenance_json.calibration) and replay system-ID
+# (README "Findings"): 120 Hz physics, 30 Hz zero-order-hold joint commands, 10 Hz policy rows = 3 x 30 Hz ticks.
+dt: 0.008333333333333333        # 1/120 s
+control_substeps: 4              # physics steps per 30 Hz control tick
+policy_ticks: 3                  # 30 Hz ticks per 10 Hz policy step (one action row)
+command_delay_substeps: {left: 1, back: 1}   # evaluator: left 5 ms, back 10 ms; one 120 Hz substep fits the data best
+gravity: [0.0, 0.0, -9.81]
+physx:                           # Isaac Lab PhysxCfg defaults otherwise (TGS); solver iterations come from the assets
+  bounce_threshold_velocity: 0.2
+  gpu_max_rigid_contact_count: 8388608
+  gpu_max_rigid_patch_count: 1310720
+  gpu_found_lost_pairs_capacity: 4194304
+  gpu_found_lost_aggregate_pairs_capacity: 16777216
+  gpu_total_aggregate_pairs_capacity: 4194304
+block:
+  solver_position_iterations: 16  # as the station scene (validated replay)
+  solver_velocity_iterations: 4
+  max_depenetration_velocity: 1.0
+  mass_kg: 0.1056
+  friction: {static: 0.40, dynamic: 0.23}   # station Foundation01 "Wood" material (the generator clones it)
+  rest_z: [0.015, 0.0441, 0.0731, 0.1021, 0.1311]   # measured resting centre heights: foundation, layer 1..4
+finger:
+  friction: {static: 2.4, dynamic: 2.0}     # station gripper material (pads; average combine with the block)
+  # the Sep-9 station that generated the data replays best with 1.2 / 1.0; training randomizes over both

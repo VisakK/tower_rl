@@ -1,0 +1,18 @@
+# Canonical gripper geometry relative to a block, measured from the demonstrations (Step 1,
+# results/data/subset_analysis.json; phase boundaries of t13/t23/t33). Pinch frame: z = approach (wrist -> finger
+# tips), y = jaw closing axis. The demos keep the tilt constant through approach, transport, place and release.
+approach_tilt_deg: {left: 12.0, back: 5.5}  # about the jaw axis, finger tips leaning away from the arm base
+pinch_offset_in_block_m: [0.0, 0.0, 0.0005]  # demos: pinch within 1 mm of the block centre, +0.2..1.8 mm in z
+pregrasp_height_m: 0.06       # demos: approach clearance 0.06 (build file: 0.10, infeasible: joint 7 hits +-90 deg)
+post_lift_height_m: 0.06      # demos lift 1.5 cm (verify), then transport upward; skill success at >= 8 cm (build file)
+preplace_height_m: 0.05       # demos: place phase starts 5.1 cm straight above the goal (build file: 0.08)
+release_clearance_m: 0.005    # demos / generator placement_clearance_m: pinch 5 mm above the nominal goal at release
+transport_peak_height_m: 0.17 # demos: transport peak pinch height 0.14-0.22 m (mean 0.16-0.17)
+block_width_m: 0.0497         # collision hull (asset AABB says 0.05)
+gripper:                      # shared by the skill envs and the executor (one 10 Hz row = 0.1 s)
+  open_width: 0.1
+  closed_width: 0.040         # ~3.9 N per finger on the 0.0497 m block (finger kp 800 N/m)
+  contact_zone_width: 0.06
+  close_speed: 0.3            # m/s above the contact zone (demos: 0.09; faster grasps, the skill centres first)
+  contact_close_speed: 0.1    # m/s inside the contact zone (demos: 0.03)
+  open_speed: 0.3             # m/s (demos: 0.16)

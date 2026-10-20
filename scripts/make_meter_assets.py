@@ -18,6 +18,7 @@ ap.add_argument("--gripper-friction", nargs=2, type=float, default=None,
                 help="static/dynamic friction of a finger material re-scoped inside the reference (default: none,"
                      " i.e. fingers keep the composed default material like a plain reference does)")
 args = ap.parse_args()
+args.out_dir = os.path.abspath(args.out_dir)  # the JSON records absolute wrapper paths
 
 MM = 0.001
 station_path = os.path.abspath(os.path.join(args.assets_root, "station", args.station))
@@ -150,6 +151,45 @@ report["cameras"] = cams
 tbl = cst.GetPrimAtPath("/TowerStation/Model/ReplayTabletopCollision")
 bb = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render", "proxy", "guide"]).ComputeWorldBound(tbl).ComputeAlignedRange()
 report["tabletop_collider_aabb_m"] = [list(bb.GetMin()), list(bb.GetMax())]
+
+# ---------------------------------------------------------------- standalone arm wrappers (light skill scene)
+# Each references one installed robot prim directly. Its parent stand carries the x1000 scale, so the robot's own
+# frames are already in meters; the local rotateXYZ that orients it on the stand is cleared so the wrapper's root is
+# the base_link frame and Isaac Lab's init_state places it (at the station base pose from report["arms"]).
+report["robot"] = {}
+for arm, stand in ARMS.items():
+    out_robot = os.path.join(args.out_dir, f"nero_{arm}_{tag}_m.usda")
+    rs = new_stage(out_robot, "Nero")
+    rp = rs.GetPrimAtPath("/Nero")
+    rp.GetReferences().AddReference(station_path, f"/PNP_DUALD1200_STATION/StationModel/InstalledRobots/{stand}/NeroRobotWithWristCamera")
+    rx = UsdGeom.Xformable(rp)
+    rx.ClearXformOpOrder()
+    rx.AddTranslateOp().Set(Gf.Vec3d(0, 0, 0))
+    rx.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Quatd(1, 0, 0, 0))  # the referenced prim authors quatd/double3
+    rx.AddScaleOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(1, 1, 1))
+    src_base = f"/PNP_DUALD1200_STATION/StationModel/InstalledRobots/{stand}/NeroRobotWithWristCamera"
+    for j in PRISMATIC:  # same unit conversion as in the station wrapper
+        sj = UsdPhysics.PrismaticJoint(src.GetPrimAtPath(f"{src_base}/joints/{j}"))
+        o = rs.OverridePrim(f"/Nero/joints/{j}")
+        oj = UsdPhysics.PrismaticJoint(o)
+        oj.CreateLowerLimitAttr(sj.GetLowerLimitAttr().Get() * MM)
+        oj.CreateUpperLimitAttr(sj.GetUpperLimitAttr().Get() * MM)
+        sd = UsdPhysics.DriveAPI.Get(sj.GetPrim(), "linear")
+        od = UsdPhysics.DriveAPI.Apply(o, "linear")
+        od.CreateTargetPositionAttr(sd.GetTargetPositionAttr().Get() * MM)
+        od.CreateMaxForceAttr(sd.GetMaxForceAttr().Get() * MM)
+        pos = sj.GetPrim().GetAttribute("state:linear:physics:position")
+        if pos and pos.HasAuthoredValue():
+            o.CreateAttribute("state:linear:physics:position", Sdf.ValueTypeNames.Float).Set(pos.Get() * MM)
+        mjv = sj.GetPrim().GetAttribute("physxJoint:maxJointVelocity")
+        if mjv and mjv.HasAuthoredValue():
+            o.CreateAttribute("physxJoint:maxJointVelocity", Sdf.ValueTypeNames.Float).Set(mjv.Get() * MM)
+    rs.GetRootLayer().Save()
+    crs = Usd.Stage.Open(out_robot)
+    lim = {j: [UsdPhysics.PrismaticJoint(crs.GetPrimAtPath(f"/Nero/joints/{j}")).GetLowerLimitAttr().Get(),
+               UsdPhysics.PrismaticJoint(crs.GetPrimAtPath(f"/Nero/joints/{j}")).GetUpperLimitAttr().Get()] for j in PRISMATIC}
+    l1 = UsdGeom.XformCache().GetLocalToWorldTransform(crs.GetPrimAtPath("/Nero/link1")).ExtractTranslation()
+    report["robot"][arm] = {"wrapper": out_robot, "prismatic_limits_m": lim, "link1_pos_m": [round(x, 6) for x in l1]}
 
 # ---------------------------------------------------------------- block wrapper (the exact prim the generator clones)
 out_block = os.path.join(args.out_dir, f"tower_block_{tag}_m.usda")
