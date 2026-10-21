@@ -1,0 +1,91 @@
+# push skill (Task 4): from near the pre-push pose behind a block's end face, push the block off the full tower along
+# its long axis without disturbing the rest of the tower. Units m, rad unless named *_deg.
+arm: left                      # left (pushes +x: layers 1, 3) | back (pushes +y: layer 2); separate policies
+num_envs: 3072                 # 15 blocks per env: 4096 envs exceed PhysX's 64K-material limit (one Wood material per block)
+episode_steps: 80              # 10 Hz policy steps (8 s; demo pushes: left 3.4 s, back 6-7.7 s)
+variants: [task4-2_full_tower_pushdown_2, task4-3_full_tower_pushdown_3]
+tiers: {D0: 0.25, D1: 0.25, D2: 0.5}
+scene:
+  max_movable: 9               # a 3-layer full tower
+  finger_effort_n: 3.0         # the Task 4/5 generator's finger effort limit
+geometry:                      # shared with the executor (tower_rl.push); demo medians, BUILDLOG 2026-10-20
+  tilt_deg: {left: 45.0, back: 30.0}   # approach axis leaning toward the push direction
+  prepush_along_m: -0.100      # pinch behind the block centre at the push start (end face at -0.075)
+  contact_along_m: -0.0865     # pinch at first contact with the end face (finger tips ahead of the pinch)
+  depart_m: 0.16               # block centre this far (xy) from the tower axis: off the tower (its near end beyond
+                               # the face); 0.15 + "fell 2 cm" left blocks leaning on the tower (Task 4-3 trace)
+  on_table_z: 0.02             # ... or lying flat on the table (centre z) at least 0.09 m out
+  tool_width_m: 0.0            # fingers fully closed (the demos)
+  handover_along_m: 0.09       # executor: a learned push whose block stalls (3 rows) this far out, level (tilt below
+  handover_max_tilt_deg: 15.0  # this) but not departed is finished by the planned straight push (debris under the last
+                               # block of a layer; 0.06 / any tilt also fired on blocks balanced at or tipping over the
+                               # edge, and the re-approach behind a tipping block hit the tower: 4-3 D0 0.70 -> 0.05)
+  retreat_m: 0.05              # after the departure: pinch up this much (planned, executor)
+reset:
+  mix: {prepush: 0.5, near: 0.3, mid: 0.2}   # around the pre-push pose / close to the end face / block already
+  mid_shift_m: [0.0, 0.06]                   # slid this far out (the end of the push: it must clear the tower)
+  tight: {frac: 0.8, pos_m: 0.015, rot_deg: 5.0}
+  wide: {frac: 0.2, pos_m: 0.04, rot_deg: 8.0}
+  near: {along_m: [-0.100, -0.094], lat_m: 0.006, z_m: 0.004, rot_deg: 4.0}
+  max_along_m: -0.094          # start never closer than this to the block centre (first contact at -0.0865;
+                               # -0.089 started ~2 % of episodes with the finger body in the end face)
+  debris:                      # earlier pushed blocks lie on the table where they land (else parked away): the last block
+                               # of a layer lands on them and must still be pushed clear (v3 / v1c never saw them and
+                               # wandered off in the rehearsal: Task 4 D0 traces)
+    frac: 0.0                  # per pushed block; 0 = off (v3 / v1c); the debris fine-tunes set it by --override
+    along_m: [0.155, 0.20]     # centre out along its push from its tower pose (flat blocks clear the foundation)
+    lat_m: 0.012
+    yaw_deg: 15.0
+    side_frac: 0.3             # lying on its side (rolled 90 deg about its long axis)
+    z_flat_m: 0.0147           # resting centre heights on the table (hull 28.3 mm tall, 50 mm wide) + 0.5 mm
+    z_side_m: 0.0255
+    min_gap_m: 0.06            # two debris blocks closer than this: the later one is parked instead
+obs_noise:
+  episode_pos_m: 0.002
+  episode_yaw_deg: 2.0
+  step_pos_m: 0.001
+  step_yaw_deg: 0.5
+action:
+  pos_far_m: 0.015             # max target translation per step
+  pos_near_m: 0.012            # near the contact pose (the push itself; demo 0.75-1.5 cm per 0.1 s)
+  near_radius_m: 0.02
+  far_radius_m: 0.06
+  rot_rad: 0.03
+  ema: 0.3
+  max_lead_m: 0.03
+push:
+  structure_mm: 10.0           # any other tower block moved more: structure broken (failure)
+  collapse_deg: 30.0
+  collapse_drop_m: 0.015
+  lateral_fail_m: 0.04         # target pushed sideways this far while still on the tower: failure
+reward:
+  align: 0.5                   # pinch keypoints vs the contact pose (until the block moves), squash [50, 2] + [100, 0]
+  progress: 150.0              # per metre of target travel along the push direction (potential, capped at depart_m;
+                               # v1 at 40: a whole push was worth ~6, less than the failure penalties: the policy stopped pushing)
+  lateral: 1.0                 # per cm of lateral target displacement beyond 5 mm (per step)
+  yaw: 0.2                     # per degree of target yaw change beyond 2 deg (per step)
+  disturb_per_cm: 0.5          # other tower blocks: sum of max(0, d - 2 mm) / 1 cm (per step)
+  success: 20.0
+  success_per_remaining_step: 1.0
+  fail: 2.0
+  action_rate: 0.01
+  joint_limit: 0.1
+ppo:
+  num_steps_per_env: 24
+  max_iterations: 600
+  num_learning_epochs: 5
+  num_mini_batches: 4
+  learning_rate: 3.0e-4
+  schedule: adaptive
+  desired_kl: 0.016
+  entropy_coef: 0.006
+  gamma: 0.99
+  lam: 0.95
+  clip_param: 0.2
+  value_loss_coef: 1.0
+  max_grad_norm: 1.0
+  init_noise_std: 0.6
+  actor_hidden_dims: [256, 256, 128]
+  critic_hidden_dims: [512, 256, 128]
+  activation: elu
+  save_interval: 100

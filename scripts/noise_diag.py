@@ -224,7 +224,7 @@ nb = (args.episodes + args.num_envs - 1) // args.num_envs
 for b in range(nb):
     NOISERS.clear()
     BATCH["seed"] = args.seed + 100 * b
-    outs = runner_mod.run_batch(world, EX, DomainSampler(args.tier, device=world.dev), seed=BATCH["seed"],
+    outs = runner_mod.run_batch(world, EX, DomainSampler(args.tier, device=world.dev, max_blocks=max(6, world.spec.num_movable)), seed=BATCH["seed"],
                                 max_time_s=args.max_time_s, rate_hz=args.rate_hz, noise=noise)
     outcomes += outs[: args.episodes - b * args.num_envs]
     for e, o in enumerate(outs):

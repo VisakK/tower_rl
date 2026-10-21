@@ -7,7 +7,7 @@ import pytest
 
 from tower_rl.data.episode import Episode
 from tower_rl.data.events import expected_operation_count, operations
-from tower_rl.data.layouts import LAYOUT_DIR, VARIANTS, Layout, yaw_of_wxyz
+from tower_rl.data.layouts import LAYOUT_DIR, VARIANTS, VARIANTS_T4, VARIANTS_T5, Layout, family_of, yaw_of_wxyz
 from tower_rl.paths import DATA_DIR
 
 SUBSET = sorted((DATA_DIR / "subset").glob("*/*.npz"))
@@ -27,6 +27,17 @@ def test_subset_episode(npz):
     assert np.isfinite(ep.qpos_obs).all() and np.isfinite(ep.block_poses).all()
     assert np.all(np.diff(ep.time) > 0)
     assert npz.parent.name.startswith(ep.task + "_")  # public_task, e.g. task3-3 (task_name says aligned_stack_3)
+    assert bool(ep.success[-1])
+    if family_of(npz.parent.name) == "pushdown":  # Task 4: no grasps; every push target ends off the tower footprint
+        lm = ep.layout_metadata
+        c = np.array(lm["tower_centers_m"][0][:2])
+        for p in lm["push_targets"]:  # (layer-1 blocks often land on earlier pushed blocks, 3-4 cm above the table)
+            assert np.linalg.norm(ep.block_poses[-1, p["block_index"], :2] - c) > 0.14, p
+        return
+    if family_of(npz.parent.name) == "insertion":  # Task 5: each insert ends at its slot centre
+        for m in ep.target_mapping:
+            assert np.linalg.norm(ep.block_poses[-1, m["block_index"], :2] - np.array(m["goal"][:2])) < 0.004, m
+        return
     ops = operations(ep)
     assert len(ops) == expected_operation_count(npz.parent.name), [o.to_dict() for o in ops]
     for op in ops:
@@ -36,7 +47,29 @@ def test_subset_episode(npz):
         assert op.lift_m > 0.04
     planned = [(m["block_id"], ("left", "back")[m["arm"]]) for m in ep.target_mapping]
     assert [(o.block_id, o.arm) for o in ops] == planned  # demos follow the plan order and arm assignment
-    assert bool(ep.success[-1])
+
+
+@pytest.mark.parametrize("variant", VARIANTS_T4 + VARIANTS_T5)
+def test_layout_file_t45(variant):
+    lay = Layout.load(variant)
+    n_layers = int(variant[-1])
+    if lay.family == "pushdown":  # full layers of three, pushed top layer first, row slot 2 -> 0
+        assert len(lay.movable_ids) == 3 * n_layers and len(lay.pushes) == 3 * n_layers and not lay.transfers
+        assert [p.source_layer for p in lay.pushes] == sorted([p.source_layer for p in lay.pushes], reverse=True)
+        for p in lay.pushes:  # along the block's long axis, away from the arm (left +x, back +y)
+            yaw = yaw_of_wxyz(lay.blocks[p.block][3:7])
+            assert abs(abs(math.cos(yaw) * p.direction[0] + math.sin(yaw) * p.direction[1]) - 1) < 0.01
+            assert p.direction[0 if p.arm == "left" else 1] > 0.99
+    else:  # one insert per interior layer, highest gap first; side blocks 32 mm tall
+        assert len(lay.transfers) == n_layers - 1
+        assert [t.dest_layer for t in lay.transfers] == sorted([t.dest_layer for t in lay.transfers], reverse=True)
+        sides = [b for b in lay.movable_ids if lay.role(b) == "side"]
+        assert len(sides) == 2 * (n_layers - 1) and all(abs(lay.dims[b][2] - 0.032) < 1e-6 for b in sides)
+        dest = np.array(lay.pads["destination"]["center"][:2])
+        for t in lay.transfers:
+            assert np.linalg.norm(t.goal[:2] - dest) < 0.003
+        assert lay.physics["collider"] == ("cuboid" if variant.endswith("_3") else "hull")
+    assert lay.physics["finger_effort_n"] == 3.0
 
 
 @pytest.mark.parametrize("variant", VARIANTS)

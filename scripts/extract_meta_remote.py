@@ -61,11 +61,19 @@ def one(row):
                     "stage": cfg.get("stage"), "physics_hz": prov.get("physics_hz"),
                     "cfg": {k: cfg.get(k) for k in ("task", "layers_above_base", "tower_jitter_m", "center_block_jitter_m", "motion_profile",
                                                      "gripper_finger_effort_limit_n", "placement_m", "placement_degrees", "max_seconds",
-                                                     "collapse_degrees", "collapse_drop_m", "collapse_seconds", "reset_settle_seconds")},
+                                                     "collapse_degrees", "collapse_drop_m", "collapse_seconds", "reset_settle_seconds",
+                                                     "settle_seconds", "final_settle_seconds")},
                     "gains_sha": hashlib.sha256(json.dumps(gains, sort_keys=True).encode()).hexdigest()[:12],
                     "gains": gains,
                     "command_delays": prov["calibration"].get("command_delays_seconds"),
                     "joint_gain_mode": prov["calibration"].get("joint_gain_mode"),
+                    # Task 4/5 additions (v1.1.0): block sizes / masses (taller Task 5 side blocks), the finger effort the
+                    # generator applied, and the task events without the per-row phase / open-loop progress records
+                    "block_dimensions_m": attr(sim, "block_dimensions_m"),
+                    "block_mass_kg": attr(sim, "block_mass_kg"),
+                    "gripper_effort": prov["calibration"].get("generator_gripper_effort_application"),
+                    "events": [e for e in (attr(sim, "events_json") or [])
+                               if e.get("event") not in ("phase", "placement_ready_open_loop")],
                 }
                 return rec
         except Exception as e:  # transient HTTP errors

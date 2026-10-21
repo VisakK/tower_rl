@@ -64,7 +64,7 @@ for variant in [args.variant]:
     policy = Executor.from_bundle(args.bundle, variant, device=str(world.dev), rate_hz=args.rate_hz)
     policy.graph.update(json.loads(args.graph_set))
     for tier in args.tiers:
-        sampler = DomainSampler(tier, device=world.dev)
+        sampler = DomainSampler(tier, device=world.dev, max_blocks=max(6, world.spec.num_movable))
         outcomes = []
         t0 = time.time()
         nb = (args.episodes + args.num_envs - 1) // args.num_envs

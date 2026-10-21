@@ -1,7 +1,8 @@
 # downloads, generated assets and run outputs: recreate them with the README "Setup" commands
-data/
-assets_m/
-results/
+# (anchored to the repo root: an unanchored data/ also matched the package tower_rl/data/)
+/data/
+/assets_m/
+/results/
 
 # Python
 __pycache__/

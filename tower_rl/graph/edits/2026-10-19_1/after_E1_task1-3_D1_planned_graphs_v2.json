@@ -1,0 +1,63 @@
+{
+ "config": {
+  "variant": "task1-3_tower_transfer_3",
+  "tier": "D1",
+  "episodes": 8,
+  "seed": 1000,
+  "bundle": null,
+  "perception_noise": false,
+  "noise": {},
+  "rate_hz": 10,
+  "finger_friction": [
+   2.4,
+   2.0
+  ],
+  "device": "cpu"
+ },
+ "metrics": {
+  "episodes": 8,
+  "TSR": {
+   "value": 0.75,
+   "k": 6,
+   "n": 8,
+   "wilson95": [
+    0.4093,
+    0.9285
+   ]
+  },
+  "GSR": {
+   "value": 0.8958,
+   "k": 43,
+   "n": 48,
+   "wilson95": [
+    0.7783,
+    0.9547
+   ]
+  },
+  "PSR": {
+   "value": 0.7708,
+   "k": 37,
+   "n": 48,
+   "wilson95": [
+    0.6346,
+    0.8669
+   ]
+  },
+  "LHPR": {
+   "value": 0.8333,
+   "k": 80,
+   "n": 96,
+   "wilson95": [
+    0.7463,
+    0.8947
+   ]
+  },
+  "ODR": {
+   "value": 0.102,
+   "disturbed": 10,
+   "steps": 98
+  },
+  "policy_errors": 0,
+  "mean_duration_s": 143.53
+ }
+}

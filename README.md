@@ -194,6 +194,38 @@ park nodes). Before every transit the other arm must be clear of the target towe
 Pure-python tests (no Isaac): `python -m pytest` (kinematics vs the dataset, layouts, reachability of every via-point,
 metrics, operation tracker, graphs, transit limits, executor determinism).
 
+### Tasks 4 and 5 (push-down, insertion)
+
+Same graph + executor, two more graph families (`tower_rl/graph/graph.py`; BUILDLOG "session 3"). **Push-down** (Task
+4): per block, in the prescribed order, transit to `prepush` (fingers closed into the pusher tool) -> `push` (PPO, per
+arm: `tower_rl/skills/push_env.py`). A learned push whose block stalls part-way out but level (debris under the last
+block of a layer) is finished by the planned straight push (`handover_*` in `configs/skills/push.yaml`). **Insertion**
+(Task 5): per insert, highest gap first, transit to the pre-grasp -> `grasp_lift` (planned in Task 5: graph
+`grasp_planned`) -> held transit to `preinsert` (block on the slot axis, 17 cm out) -> `insert` (held entry to 9 cm,
+release, back off) -> transit to `prepushin` -> `push_in` (to the slot centre). `insert` / `push_in` have PPO envs
+(`tower_rl/skills/task5_env.py`), but the planned closed-loop versions in the executor are the default: on the CPU
+evaluator they beat the GPU-trained ones (BUILDLOG). Tasks 4 / 5 run with a 3 N finger effort limit: hold at 42.5 mm
+(the full 3 N), lift gently (`lift_v_m_s`); the push-in crosses an open gap below its slot with the pusher sliding down
+the end face (`cross_window_m`, `cross_z_m`).
+
+```bash
+python scripts/build_layouts.py --t45                      # configs/layouts/task4-* / task5-*.yaml
+python -m tower_rl.graph.graph task4-2_full_tower_pushdown_2 task5-3_tower_insertion_3   # graphs
+python scripts/oracle_push.py --headless --arm left        # scripted push through the skill env (sanity)
+python scripts/train_skill.py --headless --skill push --arm back --max_iterations 300 \
+    [--override '{"reset": {"debris": {"frac": 0.7}}}'] [--resume <model.pt>]   # debris: earlier blocks on the table
+python scripts/evaluate_skill.py --headless --skill push --arm back --checkpoint <run dir> --tier D1 --episodes 500
+python scripts/oracle_task5.py --headless --skill insert --arm left --num_envs 128 [--ig_override '{...}']
+python scripts/train_skill.py --headless --skill push_in --arm left --max_iterations 250
+python scripts/grip_capacity.py --headless --device cpu --episode data/subset/task5-2_tower_insertion_2/<stem>.npz
+python scripts/rehearse_many.py --bundle results/bundles/teacher_t45_final --variants task4-2_full_tower_pushdown_2 \
+    task4-3_full_tower_pushdown_3 --tiers D0 D1 --episodes 20 --out_root results/t45/<name>
+```
+
+Rehearsals of Tasks 4 / 5 report a second success rate, "TSR collapse-only": our tracker fails a task once a block of
+the remaining tower is > 10 mm from its episode-start pose, while the generator's records only show its collapse rule
+(30 deg tilt / 15 mm drop); which one the leaderboard uses is not published.
+
 ## Development
 
 ### Layout

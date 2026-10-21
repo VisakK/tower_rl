@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from isaaclab.app import AppLauncher  # noqa: E402
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-parser.add_argument("--skill", choices=["grasp_lift", "place_release"], default="grasp_lift")
+parser.add_argument("--skill", choices=["grasp_lift", "place_release", "push", "insert", "push_in"], default="grasp_lift")
 parser.add_argument("--arm", choices=["left", "back"], default="left")
 parser.add_argument("--checkpoint", required=True)
 parser.add_argument("--tier", default="D0")
@@ -44,8 +44,14 @@ from tower_rl.skills.export import export  # noqa: E402
 
 if args.skill == "grasp_lift":
     from tower_rl.skills.grasp_lift_env import GraspLiftEnv as Env, GraspLiftEnvCfg as EnvCfg
-else:
+elif args.skill == "place_release":
     from tower_rl.skills.place_release_env import PlaceReleaseEnv as Env, PlaceReleaseEnvCfg as EnvCfg
+elif args.skill == "push":
+    from tower_rl.skills.push_env import PushEnv as Env, PushEnvCfg as EnvCfg
+elif args.skill == "insert":
+    from tower_rl.skills.insert_env import InsertEnv as Env, InsertEnvCfg as EnvCfg
+else:
+    from tower_rl.skills.push_in_env import PushInEnv as Env, PushInEnvCfg as EnvCfg
 
 tmp = Path("/tmp") / f"tower_eval_{args.skill}_{args.arm}_{os.getpid()}.pt"
 actor = torch.jit.load(str(export(args.checkpoint, tmp)), map_location=args.device).eval()

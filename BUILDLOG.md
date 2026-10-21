@@ -3,7 +3,7 @@
 Build instructions: `~/Documents/corl_challenge/TOWER_BUILD_INSTRUCTIONS.md` (the "build file"). One entry per session:
 what was built, acceptance numbers, deviations from the build file with reasons.
 
-## Status (updated 2026-10-19 10:20)
+## Status (updated 2026-10-20 03:10)
 
 | Step | State | Evidence |
 |---|---|---|
@@ -15,8 +15,9 @@ what was built, acceptance numbers, deviations from the build file with reasons.
 | 6 place_release | passed without obs noise (99-100 %); below 95 % D0 with the build file's noisy obs (deviation 13) | left 92.6 %, back 87.2 % D0 noisy |
 | 7 graph, executor, rehearsal, edit loop | **passed**: all 12 cells at N = 100 for both bundles | `teacher_v4` 1186 / 1200 (precise grasps), `teacher_v6` 1182 / 1200 (noise-tuned grasps, new executor); edits: 1 reverted, 2 and 3 kept |
 | 8 hardening | export, timing, both arms passed; **executor robust to perception noise** (realistic model TSR 0.29-0.88, was 0.00-0.75); build-file model (independent 3 mm per block) limited by perception (TSR 0.08-0.33); open: left place under shared errors, 30 Hz Task 1-3 | "Step 8.1 round 2" |
+| Tasks 4 / 5 (session 3) | **integrated**: graph families pushdown / insertion, executor nodes, PPO push (both arms) in the bundle; Task 5 runs planned grasp / insert / push-in (learned push_in left trained: worse on CPU) | rehearsal, CPU, `teacher_t45_final` (= v2 skills): 4-2 D0 / D1 0.97 / 0.88, 4-3 0.90 / 0.72 (40 each); 5-2 1.00 / 0.75, 5-3 1.00 / 0.58 (24 each; 5-3 D1 0.81 on two other seed sets) |
 
-Bundles: `teacher_v6` to run on estimated poses (graphs v5, noise-tuned grasps), `teacher_v4` for privileged use
+Bundles: `results/bundles/teacher_t45_final` for Tasks 4 / 5 (teacher_v6 skills + learned pushes left v3 / back v1c; graphs and configs of 2026-10-20 03:52; see session 3). `teacher_v6` to run on estimated poses (graphs v5, noise-tuned grasps), `teacher_v4` for privileged use
 (DAgger labels on simulator truth: tighter in-hand rotations). Submit on the 10 Hz track.
 
 ## 2026-10-18 (session 1)
@@ -679,3 +680,263 @@ Deviations:
     observation noise of the build file's own place design (goal sigma 2 mm, plus the held block's noise) caps any
     policy near 90 % at a 5 mm tolerance; without observation noise the places score 99-100 %, and the CPU rehearsals
     (exact poses) are the operative test (Step 7). Not retrained against the cap.
+
+## 2026-10-19/20 (session 3): Tasks 4 and 5 in the agentic teacher
+
+Goal (user, 2026-10-19 22:00): add Task 4 (full tower push-down) and Task 5 (tower insertion) to the teacher with PPO
+contact skills executed in sequence by the graph: `push` (Task 4), and `insert` + `push_in` (Task 5, after the existing
+grasp). Code backed up before any change: `results/backups/code_2026-10-19_2225_pre_task45.tgz` (`tower_rl/{eval,graph,
+sim,skills}` were untracked in git at that point). All Tasks 1-3 behaviour is kept bit-identical (defaults; the
+`transfer` family code paths are unchanged); the 119 + 46 new pure-python tests pass.
+
+### Ground truth (re-checked 2026-10-19 evening)
+
+Tasks 4 / 5 are official: SimData PR #1 merged 2026-10-13 (commit 1a59248e; the docs pin its PR head 5ad6adc9, same 531
+files), docs "Task prompts" / "Getting started" (all-ten selection 100 episodes, "Task1-3 · six tasks" 60), leaderboard
+Space (Pushdown / Insertion tabs since 2026-10-13; "Overall scoring formula coming soon"). Stale: the workshop
+challenge page (3 families, 331 episodes) and GitHub `yqi19/corl_challenge` (2026-10-04).
+
+### Data and layouts
+
+- `data/meta_tasks45.jsonl`: metadata of all 200 Task 4/5 episodes (`scripts/extract_meta_remote.py`, now also block
+  sizes / masses, the generator's finger effort, compact events); `data/subset/task{4,5}-*`: 10 episodes per variant
+  (arrays now include `sim/controller_qpos`, `sim/gripper_joint_positions_m`, `sim/gripper_requested_width_m`).
+- `configs/layouts/task4-*.yaml`, `task5-*.yaml` (`scripts/build_layouts.py --t45`; Tasks 1-3 YAMLs untouched):
+  family, Task 4 `pushes` (block, arm, world direction, demo push stats), Task 5 `transfers` (slot centre goal, side
+  blocks, final rest height, demo entry geometry), per-block `dims_m` / `mass_kg` / `role`, `physics` (collider, finger
+  effort).
+- Task 4: full layers of three (alternating yaw) on pad A, 2 or 3 layers; push every block off, top layer first, row slot
+  2 -> 0, prescribed order; arms: 4-2 L2 back, L1 left; 4-3 L3 left, L2 back, L1 left; push along the block's long axis
+  away from the arm (left +x, back +y), closed fingers (width 0) as a tool, approach tilted toward the push (left 45 deg,
+  back 30 deg), pinch ~100 mm behind the block centre and 7-16 mm above it at the start (first contact at -86.5 mm),
+  0.15 / 0.075 m/s; demos 116-122 s (4-2), 171-176 s (4-3).
+- Task 5: insert blocks on a stack on pad B; the destination tower on pad A: foundation, interior layers of two 32 mm
+  side blocks (0.11264 kg) with an empty middle slot (2 mm lateral, 2 mm vertical clearance), a 3-block roof. Inserts
+  highest gap first; 5-2: one insert (left arm), 5-3: layer 2 (back) then layer 1 (left). Demo recipe: centred grasp,
+  block to 170 mm out on the slot axis, held entry to 90 mm (~0.5-0.8 mm per 0.1 s), release, fingers at 0.02 m behind
+  the outer end face, push home (~2.2 mm per 0.1 s; residual <= 1.5 mm). Task 5-3 runs on exact cuboid colliders
+  (`station_cuboid_collision.usda`).
+
+### Findings that matter beyond Tasks 4 / 5
+
+1. **3 N finger effort.** Every Task 4/5 demo ran with a 3 N finger effort limit (`generator_gripper_effort_application:
+   applied 3.0, source profile 22.0`), and every organizer scene descriptor says 3.0 (the Task 2-3 cfg08 descriptor
+   too). The Tasks 1-3 data was generated at 22 N. Open question for the Tasks 1-3 teacher (its closed command 0.040 m
+   would ask ~3.9 N per finger).
+2. **The generator's applied gripper width differs from `leader/qpos` while gripping**: `sim/controller_qpos` holds
+   ~43.8 mm (2.4 N per finger at kp 800, below the 3 N limit) while `leader/qpos` says 0. Commanding 0 (or 0.040) at 3 N
+   saturates both fingers: nothing centres the block between them and it floats sideways with the fingers (a replayed
+   Task 5-2 grasp drifted 21 mm along the jaw axis and rammed the tower). Replays now use the applied channel
+   (`Episode.qpos_applied`); the Task 4/5 graphs command 0.0438 m while holding (`gripper_closed_width`).
+3. Task 5-3's demos used the published station's finger friction 2.4 / 2.0 (the Sep-9 station's 1.2 / 1.0 made the
+   replayed push-in tip the insert and drag the roof).
+4. USD prim names cannot contain `+` / `-` (Task 5 block ids): prim paths are sanitized (`station_scene.prim_name`).
+5. Skill scenes with 15 blocks per env exceed PhysX's 64K-material limit at 4096 envs (one Wood material per block):
+   3072 envs. On the CPU device, pose writes to kinematic bodies do not stick (the foundations jumped back to their
+   spawn poses): skill envs train and are checked on the GPU only.
+
+### Station scene and local evaluator
+
+- Per-block assets: the cuboid wrapper `assets_m/tower_block_cuboid_m.usda` (the organizers' Task 5 overlay: hull
+  collision off, exact box collider, same Wood material), 32 mm side blocks (scale + mass), finger effort per variant.
+- Domain sampling: Task 4 full layers get no per-block jitter (packed blocks would interpenetrate; the generator jitters
+  none; layers move rigidly); Task 5's destination tower stays at its layout pose (docs: Task 5 pose cases vary only the
+  source blocks); heights from the layout for both.
+- Operation semantics (`tower_rl/eval/operations.py`): `PushTracker` (Task 4: G = moved >= 2 cm along its direction in
+  order, P = left the tower (centre >= 0.16 m from the axis, or flat on the table >= 0.09 m out) and static 1 s, the
+  remaining tower must stay within 10 mm / the collapse rule, disturbances on tower blocks only, 2 s final settle);
+  Task 5 uses the transfer tracker (slot goal, 5 mm / 5 deg) with the tower's side / roof blocks as structure and the
+  2 s final settle.
+- **Demo replay (CPU, 30 Hz, finger friction 2.4 / 2.0, applied gripper channel): Task 4-2 4/4, 4-3 4/4, 5-2 4/4 (TSR
+  1.0, ODR 0); 5-3: grasp and held entry track the recording within 0.3 mm, the open-loop push-in is chaotic (one
+  process reproduced the recording within 4 mm, the same episode in another process dragged the upper tower).**
+
+### Task 4: push skill and executor
+
+- `tower_rl/push.py` (pusher geometry shared by env and executor), `configs/skills/push.yaml`, `push_priors.yaml`
+  (demo postures as IK seeds), `tower_rl/skills/push_env.py` (65-D actor, 159-D critic; 6-D delta-pose action, fingers
+  closed), `scripts/oracle_push.py` (scripted straight push: 74-82 % left, 70 % back on GPU).
+- Training: v1 collapsed to inaction (a whole push was worth ~6 vs failure penalties); v2 rebalanced (progress 150/m,
+  fail 2); v3 adds the stricter departure rule and "mid-push" resets (block already slid 0-6 cm). Left v3: success
+  0.30 (it. 39) -> 0.65 (79) -> 0.82 (111) -> 0.85 (135), broken 0.10.
+- Executor: transit target `prepush` (fingers closed into the tool), `PushNode` (learned, or a planned straight push
+  for pipeline tests): ends when the block left the tower, fails on structure > 10 mm / sideways shove / timeout;
+  graphs `task4-*.json`.
+- **Departure rule fix** (trace of Task 4-3): "centre >= 0.15 m or fell 2 cm" left layer-3 blocks leaning on the tower;
+  the back arm's layer-2 push then dragged them and the layer. Now: centre >= 0.16 m, or flat on the table >= 0.09 m out.
+- Rehearsal with the planned push (CPU): 4-2 D0 TSR 1.00 (4/4, ODR 0); 4-3 D0 0.75 (36/36 pushes), D1 0.25.
+
+### Task 5: executor, skill envs
+
+- Graph per insert: transit(pregrasp) -> grasp_lift -> transit(held, `preinsert`) -> insert -> transit(`prepushin`) ->
+  push_in, park between arms; the slot pose from the side blocks' rest estimates (midpoint, their axis); insert /
+  push_in skip on failure (a re-grasp from inside the tower wrecks it).
+- Planned (scripted, closed-loop) insert and push_in, fixed from traces: (1) aim from the perceived block, not the
+  stale held offset (the block hangs 6-9 mm low in the 3 N fingers); (2) level the block's pitch; (3) hold the depth
+  while misaligned at the entrance; (4) per-variant entry lift (5-3 cuboid +1 mm as the demos; 5-2 hull 0); (5) back
+  off 2 cm along the axis before rising after the release (rising at once dragged the roof); (6) servo the pusher height
+  (it sagged 3 mm and the insert caught the far side block of the empty gap below).
+- Skill envs (`tower_rl/skills/task5_env.py`): `InsertEnv` (7-D action incl. release; 55-D actor) and `PushInEnv`
+  (6-D action); scene: 4 side slots (32 mm), roof, insert, an insert already in place (5-3 stage 1); cuboid colliders,
+  3 N fingers. Oracles (`scripts/oracle_task5.py`, GPU): push_in 87.5 %; insert 48 % left / 31 % back (failures 11 mm
+  into the slot that the CPU station scene does not show: GPU contact behaviour, see deviation 14).
+
+Deviations:
+14. Task 5 skills train on GPU physics, which treats the 1-2 mm insertion clearances differently from the CPU
+    evaluator (the scripted insert succeeds on CPU, 31-48 % on GPU): the learned insert is judged in the CPU rehearsal,
+    and the planned closed-loop insert stays as the fallback.
+
+### Night of 2026-10-20 (00:30-): learned push, bundle, Task 5 fixes
+
+- **Push left v3** (`results/skills/push_left/2026-10-19_2338_4169273dc7_v3`, 300 it., 51 min): skill eval 500 episodes
+  D0 0.984 (0.969-0.992), D1 0.966 (0.946-0.979; per case: combined 0.91, high_friction 0.93, shifted 0.93,
+  irregular 0.95, lightweight 0.96, others 0.98-1.0); ~12 steps per push.
+- **Bundle `results/bundles/teacher_t45_v1`**: the teacher_v6 skills (grasp_lift left v5n / back v3n, place_release
+  left v1 it. 400 / back scratch; re-exported: identical weights and outputs, only TorchScript serialization ids differ)
+  + push left v3; push back, insert, push_in planned. Tasks 1-3 graphs and configs identical to teacher_v6 (one
+  comment line in place_release.yaml differs).
+- **Task 4 rehearsal (CPU, 20 episodes each, seed 7000), learned left push + planned back push**: 4-2 D0 1.00 (ODR 0),
+  D1 0.65 (ODR 0.16); 4-3 D0 0.90 (ODR 0), D1 0.65 (ODR 0.09). D1 failures: almost all high_friction / combined: the
+  planned back push of layer 2 drags the tower (structure > 10 mm; 4-2: 31 of 36 failed nodes) and some learned left
+  layer-1 pushes "shove" in high friction. Push back is training (v1 300 it. + 250 continuation).
+- **Heavy blocks fell out of the 3 N grasp** (Task 5-2 D1: "empty gripper" 9 / 16 grasp attempts, heavy and
+  uneven_weights): the trace shows a centred grasp (1-2 mm) whose fingers slide up the block on the first lift row. The
+  grip itself is strong enough: replaying a demo with the insert block's mass x1.0-2.0 and the held command 43.8 / 43 /
+  42.5 / 40 mm held every block (`scripts/grip_capacity.py`; the station's gripper material has no combine mode authored:
+  average). The difference is the lift: the planned grasp stepped 1 cm per 0.1 s row, the demos lift smoothly (peak
+  46 mm/s, ~0.1 m/s^2). The Task 5 graphs now ramp the planned lift (`lift_v_m_s` 0.04, `lift_a_m_s2` 0.1; Tasks 1-3
+  unchanged): Task 5-2 D1 grasp success 0.70 -> 1.00, TSR 0.40 -> 0.60 (10 episodes, seed 2000).
+- **The learned Tasks 1-3 grasp in Task 5**: grasps 8 / 8 at pad B, but leaves the block 2-3 deg rotated in the fingers
+  and the planned insert (gates: pitch < 0.3 deg, yaw < 0.4 deg at the entrance) then timed out 7 / 8 (5-2 D0, TSR 0).
+  Task 5 graphs use the planned grasp (`grasp_planned: true`; `--graph_set '{"grasp_planned": false}'` for the
+  learned one, e.g. with a learned insert, which trains with grasp rotations up to 4 deg).
+- **Demo push-in speed was misread**: all 18 push-ins of the subset run at 36-40 mm/s (peaks 42-48); the held entry at
+  8.8 mm/s (5-2) and 4.4 mm/s (5-3). At our 20 mm/s the 5-3 layer-2 insert, after crossing the empty layer-1 gap, butts
+  into the near top edge of the far layer-1 side block and shoves it and the upper tower ~14 mm (trace); in the demos
+  the leading end rides over that edge with <= 1 mm disturbance. Planned push-in 0.02 -> 0.04 m/s, push_in skill
+  action limit near the face 3 -> 6 mm per step. 5-3 D0 (8 episodes, seed 1000): TSR 0.17 -> 0.50, first push-in 6 / 8.
+- Push-in end: the planned push ended when its target reached "block centred"; the arm lags 4-10 mm at 4 cm/s, so it
+  now holds and nudges on (1 mm per row, <= 6 mm) while the block is static and short. (The 5-3 layer-1 push-in still
+  ends 5-12 mm short: under investigation.)
+- Rehearsal, all planned skills with the fixes (8 episodes, seed 1000): 5-2 D0 0.875, D1 0.50; 5-3 D0 0.375, D1 0.25.
+- **Push-in end, revisited** (trace 5-3 seed 1000000, layer 1): not arm lag. At 4 mm per 10 Hz row the pusher kicks the
+  light block ~8 mm ahead every other row (yaw swinging +-2 deg) and it overshot the centre by ~5 mm. The planned
+  push-in now slows with the block's remaining distance (`pushin_decel_per_s` 1.0: 40 mm/s from 40 mm out, >= 8 mm/s)
+  and keeps the hold-and-nudge. 8 episodes each, seed 1000: 5-2 D0 1.00, D1 0.875; 5-3 D0 0.75, D1 0.125.
+- **5-3 layer-2 gap crossing is a tie-break**: at the moment the insert's leading end meets the far layer-1 side block,
+  the insert's bottom and that block's top are both at 62.000 mm (trace, 1 um resolution). PhysX box-box contact then
+  picks a horizontal normal on that edge about half the time and the push shoves the side block and the upper tower
+  (> 10 mm). The demos crossed with <= 1 mm (the generator's physics broke the tie upward). Speed / height variants
+  (16 episodes each, i0 push-in OK): 40 mm/s 8 / 16; 60 mm/s 3 / 16; pusher -4 mm 5 / 16; +4 mm 4 / 16 (offsets also
+  hurt the layer-1 push-in). The prompt fixes the order ("highest gap first"), so the layer-2 insert must cross the open
+  gap. Being tried: in the crossing window the pusher slides down the end face (+2 -> -3 mm) so that, once the nose is
+  blocked and the push force rises, friction drags the tail down (needs > ~0.55 N) and the nose tips up over the edge
+  (`gap_below` push-in nodes; `cross_window_m`, `cross_z_m`).
+- **Crossing window works**: 5-3 with the descending pusher (2 seeds x 8 episodes per tier): D0 16 / 16 (layer-2 push-in
+  16 / 16), D1 11 / 16 (layer-2 push-in 14 / 16; other D1 failures: layer-1 insert "structure" under shifted_assembly /
+  uneven_weights, one drop).
+- **Full 3 N hold**: a combined-case block (mass x1.8, slippery) slid 14 mm down the fingers during the gentle lift and
+  dropped in the held transit: the hold command (finger kp 800 N/m) gave 2.5 N per finger. `held_close_width_m`
+  0.0438 -> 0.0425 (3.75 mm per finger = the 3 N limit; below 42.5 both fingers saturate and lose centring). 5-2 (8
+  episodes, seed 1000): D0 1.00, D1 0.875 (the combined block now holds; its insert timed out: rotated 4 deg in the
+  grasp). The Task 5 skill envs read the same value (insert / push_in trainings start after this change).
+- **Push back** v1 (300 it.; success 0.00 until it. ~60, 0.15 at 119, 0.81 at 300) + continuation v1c (250 it., resumed
+  from v1's final checkpoint; `results/skills/push_back/2026-10-20_0110_92e764d0fc_v1c`): training success 0.85, broken
+  0.15 (mix D0 / D1 / D2). Skill eval 500 episodes: D0 0.996 (0.986-0.999), D1 0.946 (0.923-0.963; high_friction 0.85,
+  combined 0.87, shifted 0.87, irregular 0.95, uneven 0.94, others 0.98-1.0); ~17 steps per push.
+- **Bundle `results/bundles/teacher_t45_v2`** = v1 + push back v1c (both pushes learned; insert / push_in planned;
+  Task 5 graphs with the planned grasp, gentle lift, 3 N hold, crossing window).
+- Crossing variants (5-3, seed 5000, 16 per tier): pusher +2 -> -3 mm (baseline) D0 15 / D1 11; slower crossing
+  (20 mm/s in the window) 8 / 9; steeper descent +3 -> -6 mm 16 / 13 (adopted).
+- **Task 4 with both pushes learned (teacher_t45_v2, 20 episodes, seed 7000)**: 4-2 D0 0.80, D1 0.70; 4-3 D0 0.70,
+  D1 0.45 (v1, learned left + planned back: 1.00 / 0.65 / 0.90 / 0.65). Trace (4-2 D0): the learned back push slid
+  the last block of layer 2 ~106 mm out, where it came to rest on the two blocks pushed before it (debris on the table)
+  while still leaning on the tower edge (not departed); the actor, which never saw debris (training parks pushed
+  blocks away and masks non-tower blocks from its observation), lifted over it, wandered ~30 cm and hit layer 1.
+  Executor fix: a learned push whose block stalls part-way (>= 9 cm out, static 3 rows, level < 15 deg, not
+  departed) is finished by the planned straight push (back over the block, then down behind its end face). A first
+  trigger (>= 6 cm, 2 rows, any tilt) also fired on top-layer blocks balanced at the edge or tipping over it; the
+  re-approach behind a tipping block descended into the tower (4-3 D0 0.05): narrowed.
+- Training fix (queued): `reset.debris` in the push env puts earlier pushed blocks on the table where they land
+  (155-200 mm out along their push, flat or on a side, never two in one spot; `tower_rl.push.debris_poses`,
+  `tests/test_push_debris.py`); fine-tunes push left v4d (150 it.) / back v2d (200 it.) from v3 / v1c with
+  `{"reset": {"debris": {"frac": 0.7}}}`.
+- Scoring note: most remaining Task 4 D1 failures with v2 are our tracker's "structure broken" (a remaining tower block
+  > 10 mm from its *episode-start* pose: cumulative drift over several pushes), while every push succeeded. The
+  generator's outcome records only a collapse rule (30 deg tilt / 15 mm drop for 0.25 s; `outcome.collapse`), so the
+  official rule may be looser. The runner now also reports "TSR collapse-only" (a shadow tracker without the 10 mm
+  rule) for Tasks 4 / 5; the headline TSR keeps the stricter rule.
+- **Task 4, teacher_t45_v2 + narrowed hand-over (20 episodes, seed 7000)**: 4-2 D0 1.00 (ODR 0), D1 0.85 (ODR 0.04;
+  collapse-only 0.90); 4-3 D0 0.95 (ODR 0), D1 0.70 (ODR 0.10; collapse-only 0.75). Remaining D1 failures: high
+  friction (layer-2 back pushes drag the tower, layer-1 left pushes shoved sideways) and heavy / combined.
+- **push_in left v1** (`results/skills/push_in_left/2026-10-20_0149_286c3e5e57_v1`, 250 it., GPU, demo-speed action
+  limit): training success 0.91. First CPU rehearsal with it (bundle `teacher_t45_v3` = v2 + push_in left): 0 / 64,
+  the actor dived away from the block and lunged into the tower. Cause: an observation mismatch, not physics. PushInEnv
+  never marks the gripper "closed" (its command is just the pusher width), the executor reset it closed at the pusher
+  width, so the actor saw +1 in a feature that was always -1 in training. Fixed in the executor's learned push-in
+  step. (A GPU "smoke" run of the debris env became a full training: `--smoke` needs `--num_envs` / `--max_iterations`
+  given explicitly; killed at it. 55 after confirming the env runs.)
+- With the fix, push_in left v1 on CPU (seed 5000, 16 per tier): 5-2 D0 12 / 16, D1 10 / 16; 5-3 D0 10 / 16, D1
+  11 / 16. Planned push-in on the same seeds: 5-2 16 / 14, 5-3 16 / 13. The learned push-in's failures are final
+  position errors of 5-16 mm (GPU-trained contact dynamics vs the CPU evaluator: the light block slides further).
+  The planned push-in stays the default (bundles keep the learned actor available for comparison).
+- **Final Task 5 evaluation (planned skills, bundle teacher_t45_v2, seed 8000, 24 episodes per cell)**: 5-2 D0 24 / 24
+  (Wilson 0.86-1.00), D1 18 / 24 (0.55-0.88); 5-3 D0 24 / 24, D1 14 / 24 (0.39-0.76; seeds 5000 / 6000 gave 13 / 16
+  each). Collapse-only TSR identical. D1 failures: the 5-3 layer-2 gap crossing in friction cases (slippery x3,
+  high_friction x2, combined x2: structure 11-16 mm); inserts wrecking the tower after a tilted lift (below);
+  high-friction / heavy layer-1 inserts at the 10 mm limit.
+- **Open: left arm on a rotated pad-B stack** (shifted_assembly / irregular / combined; trace 5-2 D1 8000001): the
+  canonical grasp of a block yawed +5.6 deg needs joint 7 beyond its limit (1.54 rad); the grasp itself is centred,
+  but during the lift IK cannot hold the orientation (position error 50 mm, rotation 13 deg) and the block arrives at
+  the slot tilted ~22 deg; the insert then hits the tower (200+ mm). A jaw flip (fingers are interchangeable) would
+  move j7 by pi at the slot as well, so it must be chosen over the whole transfer; or the lift / held transit should
+  free the yaw about the approach axis while keeping the block level. ~4-5 of 48 D1 episodes.
+- **push left v4d** (debris fine-tune of v3, 150 it., `results/skills/push_left/2026-10-20_0235_82ff9dde78_v4d`):
+  training success 0.91, broken 0.06 with debris (v3 without: 0.91 / 0.06). Bundle `teacher_t45_v4a` (v4d + back
+  v1c + hand-over), 20 episodes, seed 7000: 4-2 D0 1.00, D1 0.70 (collapse-only 0.85); 4-3 D0 0.95, D1 0.60 (0.70).
+  No gain over v2 (1.00 / 0.85 / 0.95 / 0.70) within the noise of 20 episodes: the hand-over already finishes the
+  stalled last blocks.
+- **Final Task 4 evaluation (bundle teacher_t45_v2: push left v3, back v1c, hand-over; seed 9000, 40 episodes per
+  cell)**: 4-2 D0 39 / 40 = 0.97 (Wilson 0.87-1.00; collapse-only 1.00), D1 35 / 40 = 0.88 (0.74-0.95); 4-3 D0
+  36 / 40 = 0.90 (0.77-0.96; collapse-only 0.95), D1 29 / 40 = 0.72 (0.57-0.84). ODR 0.002-0.062. D1 failures:
+  combined (9), high_friction (4), uneven / irregular / shifted (1 each).
+- Regression check of Tasks 1-3 after the session's executor / runner changes: teacher_v6, 8 episodes per cell, Task
+  1-2 and 2-3 D0 / D1 all 8 / 8.
+- Repo note: `.gitignore` line `data/` also matches the package `tower_rl/data/` (layouts.py, episode.py, remote.py,
+  ...): those sources are not in git (commit 22132a4 lacks them). A root-anchored `/data/` (and `/results/`,
+  `/assets_m/`) would fix it; left for the user.
+- Debris fine-tunes, skill eval in the debris env (500 episodes): left v4d D0 0.988 / D1 0.958, back v2d (200 it. from
+  v1c, `results/skills/push_back/2026-10-20_0302_b5e44dc924_v2d`) D0 0.994 / D1 0.942. In the full task (bundle
+  `teacher_t45_v4b` = left v3 + back v2d, same seeds / 40 per cell): 4-2 D0 0.88, D1 0.78; 4-3 D0 0.93, D1 0.68: 130 /
+  160 vs v2's 139 / 160. **teacher_t45_v2 stays the Task 4 / 5 bundle**; the debris fine-tunes are kept as runs only.
+- **Rotated pad-B stack, corrected diagnosis**: every failing shifted / irregular 5-2 D1 episode has `grasp_rot_deg`
+  40-41 right after the grasp and a pre-grasp `goal_adjust_deg` ~4.5: at the left arm's workspace edge
+  `feasible_orientation` lets IK pick the tilt about the jaw axis, and it picks ~40 deg; the block is held centred,
+  but the pitched gripper is carried to the slot and its body sweeps into the tower as the insert starts (143-264 mm).
+  A free yaw during the lift (tried: IK free axis = vertical) does not change it (24 episodes: 5-2 D1 17 vs 18, 5-3 D1
+  15 vs 14) and was reverted. Fix to try next: bound the jaw-axis tilt the pre-grasp may choose (or prefer the side
+  that leans away from the slot), and fail the transfer early rather than insert with a pitched gripper.
+- **push_in back v1** stopped at it. 111 / 250 (success 0.00). Its scripted oracle on GPU scores 0 / 128 too (118
+  timeouts; 10 resets where the part-inserted block tips out of the slot, up to 36 deg): the back arm's only push-in
+  is 5-3's layer-2 gap crossing, the coplanar edge case, which the GPU env does not get past. The env (reset depth,
+  crossing) needs work before training; the planned push-in with the crossing window is the Task 5 default anyway.
+  Insert back (same slot) not trained; insert left v1 queued (300 it.).
+- **Final bundle `results/bundles/teacher_t45_final`** (2026-10-20 03:52): the skills of teacher_t45_v2 (identical
+  weights) with the final graphs and configs (push hand-over parameters; v2's push.yaml predates them, the final
+  evaluations above already ran with them). Export check with `--bundle_configs` (configs read from the bundle), D0, 4
+  episodes each: Task 1-2, 4-3, 5-3 all 4 / 4.
+- **insert left v1** stopped at it. 79 / 300: success 0.00, every episode a failure after ~4 steps (the block released
+  outside the slot): a randomly initialised actor opens at once (release when the logit < -0.3) and PPO settled on
+  failing fast (mean return -7). v2: the release is ignored until the perceived block is >= `release_min_along_m`
+  (-0.105, the success depth) in the slot, in the env (`_grip_mask`) and in the executor's learned insert step alike.
+- **insert left v2** (release masked; `results/skills/insert_left/2026-10-20_0407_316564d2c9_v2`, 300 it.): GPU training
+  success 0.27 (its scripted oracle reaches ~0.5 there). CPU rehearsal (bundle `teacher_t45_x_insert` = final +
+  insert left v2; 5-2, seed 5000, 16 per tier): 0 / 32, every insert timed out. Trace: from the pre-insert pose the actor
+  drives the held block down to the table and sideways, away from the slot, from its first rows. Unresolved: the
+  observation and action pipelines were compared term by term (gripper flag, width command, phase, progress, action
+  scale, EMA, lead limit) and agree, and the block's axis convention is the same in env and executor (x along the
+  insertion direction, checked); remaining suspects are the start-state distribution (how the block hangs in the 3 N
+  grasp on GPU vs CPU) and the GPU contact artifact. Next: replay the executor's first insert observation inside the
+  GPU env and diff the vectors / actions.
+- End of session 3 (05:00): GPU idle. Recommended for Tasks 4 / 5: `teacher_t45_final`, where Task 5 uses the planned
+  grasp / insert / push-in.

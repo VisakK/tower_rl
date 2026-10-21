@@ -15,7 +15,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.patches import Polygon  # noqa: E402
 
-from tower_rl.data.layouts import BLOCK_SIZE, METADATA_JSONL, VARIANTS, build_layout, load_metadata, write_layout, yaw_of_wxyz  # noqa: E402
+from tower_rl.data.layouts import (BLOCK_SIZE, METADATA_JSONL, METADATA_T45_JSONL, VARIANTS, VARIANTS_T4, VARIANTS_T5,  # noqa: E402
+                                   build_layout, build_layout_t45, load_metadata, write_layout, yaw_of_wxyz)
 from tower_rl.paths import RESULTS_DIR  # noqa: E402
 
 
@@ -57,6 +58,12 @@ def plot(layout, path):
         s = layout["blocks"][t["block"]]["pose"]
         axes[1].annotate("", xy=g[:2], xytext=s[:2], arrowprops=dict(arrowstyle="->", color="tab:purple" if t["arm"] == "back" else "tab:cyan", lw=1))
         axes[1].annotate(f"{k + 1}:{t['arm']}", ((s[0] + g[0]) / 2, (s[1] + g[1]) / 2 + 0.008 * k), fontsize=7)
+    for k, p in enumerate(layout.get("pushes", [])):  # Task 4: push arrows from each block along its direction
+        s = layout["blocks"][p["block"]]["pose"]
+        d = p["direction"]
+        axes[1].annotate("", xy=(s[0] + 0.2 * d[0], s[1] + 0.2 * d[1]), xytext=s[:2],
+                         arrowprops=dict(arrowstyle="->", color="tab:purple" if p["arm"] == "back" else "tab:cyan", lw=1))
+        axes[1].annotate(f"{k + 1}:{p['arm']}", (s[0] + 0.1 * d[0], s[1] + 0.1 * d[1] + 0.006 * k), fontsize=7)
     for ax in axes:  # arm bases (station frame)
         ax.plot(-0.1165, -0.288, "s", color="tab:cyan")
         ax.plot(0.381, -0.774, "s", color="tab:purple")
@@ -67,17 +74,18 @@ def plot(layout, path):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--meta", default=str(METADATA_JSONL))
+    ap.add_argument("--meta", default=None)
     ap.add_argument("--plots", default=str(RESULTS_DIR / "layouts"))
+    ap.add_argument("--t45", action="store_true", help="Task 4/5 variants from data/meta_tasks45.jsonl (Tasks 1-3 untouched)")
     args = ap.parse_args()
-    meta = load_metadata(args.meta)
+    meta = load_metadata(args.meta or (METADATA_T45_JSONL if args.t45 else METADATA_JSONL))
     Path(args.plots).mkdir(parents=True, exist_ok=True)
-    for v in VARIANTS:
-        layout = build_layout(v, meta[v])
+    for v in (VARIANTS_T4 + VARIANTS_T5 if args.t45 else VARIANTS):
+        layout = build_layout_t45(v, meta[v]) if args.t45 else build_layout(v, meta[v])
         p = write_layout(layout)
         plot(layout, Path(args.plots) / f"{v}_topdown.png")
         print(f"[layouts] {v}: {layout['num_episodes']} episodes, {len(layout['transfers'])} transfers, "
-              f"max block std {layout['jitter']['max_block_std_mm']} mm -> {p}", flush=True)
+              f"{len(layout.get('pushes', []))} pushes, max block std {layout['jitter']['max_block_std_mm']} mm -> {p}", flush=True)
 
 
 if __name__ == "__main__":

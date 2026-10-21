@@ -1,0 +1,103 @@
+# Task 5 insertion geometry (shared by the executor and the insert / push_in skill envs). Units m, rad unless *_deg.
+# Demo medians (data/subset/task5-*, BUILDLOG 2026-10-20): the block is grasped centred (the canonical grasp),
+# carried to the slot axis 170 mm out from the slot centre, slid in while held to 90 mm (its leading 60 mm inside the
+# slot: the fingers stay ~15 mm outside the tower face), released (it wedges between floor and roof), then pushed home
+# by the nearly closed fingers (width 0.02) from behind its outer end face.
+geometry:
+  outside_m: 0.170           # block centre from the slot centre along the axis at the pre-insert pose
+  entry_m: 0.090             # ... at the release (held entry)
+  insert_speed_m_s: 0.01     # held slide (demos: 5-2 8.8 mm/s, 5-3 4.4 mm/s)
+  entry_lift_m: {cuboid: 0.001, hull: 0.0}   # held block above the goal height while entering, by collider (demos:
+                             # 5-3 cuboid +1.0 mm: at the goal height its bottom face is flush with the floor's top edge and
+                             # catches it; 5-2 hull -0.3 mm, and +1 mm there dropped the planned insert from 5/6 to 2/6)
+  release_retreat_m: 0.04    # after the release: pinch straight up
+  pusher_width_m: 0.02       # fingers for the push-in
+  prepushin_along_m: -0.107  # pinch behind the block centre (end face at -0.075) and above it, then descends
+  prepushin_up_m: 0.04
+  pushin_contact_along_m: -0.086
+  pushin_speed_m_s: 0.04     # demos 36-40 mm/s mean, 42-48 peak (all 18 push-ins of the subset; an earlier "~22" was
+                             # wrong); at 20 mm/s Task 5-3's layer-2 insert stalls on the far l1 side block's edge
+                             # after crossing the empty l1 gap and shoves it (10 mm/s: 0/6)
+  pushin_decel_per_s: 1.0    # planned push-in speed <= this x the block's distance to the slot centre (40 mm/s from
+                             # 40 mm out: the 5-3 layer-2 gap crossing at 50 mm stays at full speed) ...
+  pushin_min_speed_m_s: 0.008  # ... and >= this
+  pushin_z_offset_m: 0.0     # pinch height above the slot centre while pushing (planned push-in)
+  cross_window_m: [-0.068, -0.038]   # gap below the slot (5-3 layer 2): block centre along the axis while its leading
+                             # end meets the far side block (at -0.050) ...
+  cross_z_m: [0.003, -0.006] # ... pinch height offset sliding from +3 to -6 mm over that window (drags the tail down;
+                             # seed 5000 x 16: [+2, -3] D0 15 / D1 11, [+3, -6] 16 / 13; 20 mm/s inside it: 8 / 9)
+  pushin_retreat_m: 0.03     # after the push: pinch back along the axis, then up
+  held_close_width_m: 0.0425 # grasp command while holding: 3.75 mm per finger x kp 800 = the 3 N limit (full grip,
+                             # no dead band: both fingers would saturate only below 42.5). The generator applied
+                             # 43.8 (2.5 N): a 1.8x slippery block slid 14 mm down the fingers in the lift (5-2 D1)
+
+# ---- insert skill env (tower_rl.skills.task5_env.InsertEnv): held entry, release, retreat
+arm: left                      # left (Task 5-2 and 5-3 layer 1) | back (Task 5-3 layer 2)
+num_envs: 3072                 # 15 blocks per env (PhysX 64K-material limit)
+episode_steps: 150             # 15 s (demo held entry: 11-20 s)
+variants: [task5-2_tower_insertion_2, task5-3_tower_insertion_3]
+tiers: {D0: 0.25, D1: 0.25, D2: 0.5}
+scene:
+  max_movable: 9               # m0-m3 side blocks (32 mm), m4-m6 roof, m7 the insert, m8 an insert already in place
+  finger_effort_n: 3.0
+  collider: cuboid             # Task 5-3's generator (exact boxes: the tighter fit)
+  slot_dims: {0: [0.15, 0.05, 0.032], 1: [0.15, 0.05, 0.032], 2: [0.15, 0.05, 0.032], 3: [0.15, 0.05, 0.032]}
+  slot_mass: {0: 0.11264, 1: 0.11264, 2: 0.11264, 3: 0.11264}
+reset:
+  tower_jitter_m: 0.003        # the generator's tower jitter (the whole destination tower)
+  mid_frac: 0.3                # start part-way in (leading end 10-50 mm inside), aligned
+  outside: {along_m: 0.02, lat_m: 0.008, z_m: 0.004, yaw_deg: 3.0}
+  mid: {along_m: [-0.14, -0.10], lat_m: 0.0008, z_m: [0.0, 0.0012], yaw_deg: 0.4}
+  grasp_offset: {x_m: 0.008, z_m: 0.003, rot_deg: 4.0}   # within the grasp skill's quality gate
+obs_noise:                     # small: the 1 mm / side clearance leaves no room for the build file's 2 mm sigma
+  episode_pos_m: 0.0005
+  episode_yaw_deg: 0.3
+  step_pos_m: 0.0003
+  step_yaw_deg: 0.1
+action:
+  pos_far_m: 0.008             # max target translation per step (outside the slot)
+  pos_near_m: 0.002            # ... once the block's leading end is within 3 cm of the tower face (demo ~0.5-0.8 mm/row)
+  rot_rad: 0.01
+  ema: 0.3
+  max_lead_m: 0.015
+  grip_threshold: -0.3         # stays closed unless the logit < -0.3
+insert:
+  along_min_m: -0.105          # success: centre at least this far in (leading end >= 45 mm inside: it wedges)
+  release_min_along_m: -0.105  # the release action is ignored before the block is this far in (env and executor)
+  along_max_m: -0.060
+  lat_m: 0.0025
+  tilt_deg: 8.0                # the released block wedges with ~2 deg
+  settle_steps: 5
+  retreat_m: 0.03
+  structure_ok_m: 0.003
+  align_gate_m: 0.0015         # progress along the slot counts only while aligned this well (else it rams the sides)
+termination: {structure_m: 0.010, drop_m: 0.02, tilt_deg: 20.0}
+reward:
+  align: 0.5                   # block on the slot line (across, vertical, yaw as tip offset), squash [300, 2] + [1000, 0]
+  progress: 100.0              # per metre toward the entry depth (potential; advancing counts only while aligned)
+  release_ok: 0.5              # per step released with the block deep enough
+  structure_per_cm: 5.0        # tower displacement beyond 1 mm
+  success: 20.0
+  success_per_remaining_step: 0.5
+  fail: 5.0
+  action_rate: 0.01
+  joint_limit: 0.1
+ppo:
+  num_steps_per_env: 24
+  max_iterations: 400
+  num_learning_epochs: 5
+  num_mini_batches: 4
+  learning_rate: 3.0e-4
+  schedule: adaptive
+  desired_kl: 0.016
+  entropy_coef: 0.004
+  gamma: 0.99
+  lam: 0.95
+  clip_param: 0.2
+  value_loss_coef: 1.0
+  max_grad_norm: 1.0
+  init_noise_std: 0.5
+  actor_hidden_dims: [256, 256, 128]
+  critic_hidden_dims: [512, 256, 128]
+  activation: elu
+  save_interval: 100

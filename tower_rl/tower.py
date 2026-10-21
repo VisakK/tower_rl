@@ -46,6 +46,13 @@ class TowerSpec:
     transfer_dest_layer: torch.Tensor  # [K]
     goal: torch.Tensor         # [K, 7] world goal poses
     goal_rel_xy: torch.Tensor  # [K, 2] goal position in the destination pad frame
+    # Task 4/5 (dataset v1.1.0). Tasks 1-3 keep the defaults and their exact previous behaviour.
+    family: str = "transfer"                   # transfer | pushdown | insertion
+    nominal: torch.Tensor | None = None        # [M, 7] layout poses of the movable blocks (heights for Task 4/5)
+    perturb: torch.Tensor | None = None        # [M] bool: the robustness cases move this block (source side only)
+    push_block: torch.Tensor | None = None     # [P] index into movable_ids, push order (Task 4)
+    push_arm: list[str] | None = None
+    push_dir: torch.Tensor | None = None       # [P, 3] world push direction (unit, horizontal)
 
     @property
     def num_movable(self) -> int:
@@ -72,16 +79,27 @@ def load_spec(variant: str, device: str = "cpu") -> TowerSpec:
     pos = torch.tensor(np.stack([lay.blocks[b][:2] for b in mov]), dtype=torch.float32)
     rel = ((pos - src_c) @ _rot2(torch.tensor(src_yaw))).float()  # world -> pad frame: R^T (p - c)
     yaw = torch.tensor([yaw_of_wxyz(lay.blocks[b][3:7]) for b in mov], dtype=torch.float32)
-    goal = torch.tensor(np.stack([t.goal for t in lay.transfers]), dtype=torch.float32)
+    goal = torch.tensor(np.stack([t.goal for t in lay.transfers]), dtype=torch.float32) if lay.transfers else torch.zeros(0, 7)
     goal_rel = (goal[:, :2] - dst_c) @ _rot2(torch.tensor(dst_yaw))
+    extra = {}
+    if lay.family != "transfer":
+        extra = dict(
+            family=lay.family,
+            nominal=torch.tensor(np.stack([lay.blocks[b] for b in mov]), dtype=torch.float32),
+            # docs "Task prompts": "Task5 pose cases vary only the source blocks" (the inserts); Task 4's whole tower
+            perturb=torch.tensor([lay.side[b] == "source" for b in mov]),
+            push_block=torch.tensor([mov.index(p.block) for p in lay.pushes], dtype=torch.long),
+            push_arm=[p.arm for p in lay.pushes],
+            push_dir=torch.tensor(np.stack([p.direction for p in lay.pushes]), dtype=torch.float32) if lay.pushes else torch.zeros(0, 3),
+        )
     spec = TowerSpec(
         variant=variant, src_center=src_c, src_yaw=src_yaw, dst_center=dst_c, dst_yaw=dst_yaw,
         foundation_ids=f_ids, foundation=foundation, movable_ids=mov,
         layer=torch.tensor([lay.layer[b] for b in mov]), rel_xy=rel, yaw=yaw,
-        transfer_block=torch.tensor([mov.index(t.block) for t in lay.transfers]),
+        transfer_block=torch.tensor([mov.index(t.block) for t in lay.transfers], dtype=torch.long),
         transfer_arm=[t.arm for t in lay.transfers],
-        transfer_dest_layer=torch.tensor([t.dest_layer for t in lay.transfers]),
-        goal=goal, goal_rel_xy=goal_rel.float(),
+        transfer_dest_layer=torch.tensor([t.dest_layer for t in lay.transfers], dtype=torch.long),
+        goal=goal, goal_rel_xy=goal_rel.float(), **extra,
     )
     return spec.to(device)
 
@@ -100,15 +118,26 @@ def source_poses(spec: TowerSpec, dom: DomainSample, rest_z: torch.Tensor) -> to
     n = dom.assembly_xy.shape[0]
     m = spec.num_movable
     li = (spec.layer - 1).clamp(max=dom.layer_xy.shape[1] - 1)  # [M]
-    p = spec.rel_xy[None].expand(n, m, 2) + dom.block_xy[:, :m]
+    # per-block jitter (the Tasks 1-3 generator's centre-block jitter) would make Task 4's packed full layers (three
+    # blocks side by side, 0.25 mm apart) interpenetrate; its generator jitters nothing per block, layers move rigidly
+    bxy = torch.zeros_like(dom.block_xy[:, :m]) if spec.family == "pushdown" else dom.block_xy[:, :m]
+    p = spec.rel_xy[None].expand(n, m, 2) + bxy
     ly = dom.layer_yaw[:, li]            # [N, M]
     p = (_rot2(ly) @ p[..., None]).squeeze(-1) + dom.layer_xy[:, li]
     ay = dom.assembly_yaw[:, None].expand(n, m)
     p = (_rot2(ay) @ p[..., None]).squeeze(-1) + dom.assembly_xy[:, None]
     p = spec.src_center + (_rot2(torch.tensor(spec.src_yaw, device=p.device)) @ p[..., None]).squeeze(-1)
     yaw = spec.yaw[None] + ly + ay
-    z = rest_z[spec.layer][None].expand(n, m)
-    return pose_from_xy_yaw(p, z, yaw)
+    if spec.family == "transfer":
+        z = rest_z[spec.layer][None].expand(n, m)
+        return pose_from_xy_yaw(p, z, yaw)
+    # Task 4/5: heights from the layout (Task 5's 32 mm side blocks and its roof sit off the standard layer pitch);
+    # blocks the robustness cases do not move (Task 5's destination tower) stay at their layout poses
+    z = spec.nominal[:, 2][None].expand(n, m)
+    out = pose_from_xy_yaw(p, z, yaw)
+    keep = ~spec.perturb
+    out[:, keep] = spec.nominal[keep][None].expand(n, int(keep.sum()), 7)
+    return out
 
 
 def goal_poses_with_error(spec: TowerSpec, rest_z: torch.Tensor, n: int, xy_err_m: float, yaw_err_deg: float,

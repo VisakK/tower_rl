@@ -21,7 +21,10 @@ from tower_rl.paths import REPO_ROOT  # noqa: E402
 from tower_rl.skills.export import export  # noqa: E402
 
 CONFIGS = ["physics.yaml", "scene.yaml", "tiers.yaml", "robot/nero.json", "skills/grasp_geometry.yaml",
-           "skills/posture_priors.yaml", "skills/grasp_lift.yaml", "skills/place_release.yaml", "layouts"]
+           "skills/posture_priors.yaml", "skills/grasp_lift.yaml", "skills/place_release.yaml", "layouts",
+           # Task 4 / 5 (push; insert + push_in; the insert geometry is shared with the planned nodes)
+           "skills/push.yaml", "skills/push_priors.yaml", "skills/insert.yaml", "skills/push_in.yaml"]
+SKILLS = ("grasp_lift", "place_release", "push", "insert", "push_in")
 
 
 def sha256(p: Path) -> str:
@@ -59,7 +62,7 @@ def main():
     dirty = bool(subprocess.run(["git", "status", "--porcelain"], cwd=REPO_ROOT, capture_output=True, text=True).stdout.strip())
     files = {str(p.relative_to(out)): sha256(p) for p in sorted(out.rglob("*")) if p.is_file()}
     manifest = {"created": time.strftime("%Y-%m-%dT%H:%M:%S"), "git_commit": commit, "git_dirty": dirty, "skills": skills,
-                "planned_fallbacks": sorted({f"{s}_{a}" for s in ("grasp_lift", "place_release") for a in ("left", "back")} - set(skills)),
+                "planned_fallbacks": sorted({f"{s}_{a}" for s in SKILLS for a in ("left", "back")} - set(skills)),
                 "files": files}
     (out / "MANIFEST.json").write_text(json.dumps(manifest, indent=1))
     tar = out.with_suffix(".tar.gz")

@@ -1,0 +1,126 @@
+diff -ru a/tower_rl/graph/graphs/task1-2_tower_transfer_2.json b/tower_rl/graph/graphs/task1-2_tower_transfer_2.json
+--- a/tower_rl/graph/graphs/task1-2_tower_transfer_2.json	2026-10-19 08:41:53.983418480 -0700
++++ b/tower_rl/graph/graphs/task1-2_tower_transfer_2.json	2026-10-19 08:42:03.399623744 -0700
+@@ -1,6 +1,6 @@
+ {
+  "variant": "task1-2_tower_transfer_2",
+- "version": 4,
++ "version": 5,
+  "retries": 2,
+  "rate_hz": 10,
+  "chunk": {
+@@ -307,5 +307,8 @@
+   "source_l1_b",
+   "source_l2_a",
+   "source_l2_b"
+- ]
++ ],
++ "perception": {
++  "jaw_to_goal": 0.5
++ }
+ }
+diff -ru a/tower_rl/graph/graphs/task1-3_tower_transfer_3.json b/tower_rl/graph/graphs/task1-3_tower_transfer_3.json
+--- a/tower_rl/graph/graphs/task1-3_tower_transfer_3.json	2026-10-19 08:41:53.983418480 -0700
++++ b/tower_rl/graph/graphs/task1-3_tower_transfer_3.json	2026-10-19 08:42:03.399623744 -0700
+@@ -1,6 +1,6 @@
+ {
+  "variant": "task1-3_tower_transfer_3",
+- "version": 4,
++ "version": 5,
+  "retries": 2,
+  "rate_hz": 10,
+  "chunk": {
+@@ -449,5 +449,8 @@
+   "source_l2_b",
+   "source_l3_a",
+   "source_l3_b"
+- ]
++ ],
++ "perception": {
++  "jaw_to_goal": 0.5
++ }
+ }
+diff -ru a/tower_rl/graph/graphs/task2-2_cross_tower_transfer_2.json b/tower_rl/graph/graphs/task2-2_cross_tower_transfer_2.json
+--- a/tower_rl/graph/graphs/task2-2_cross_tower_transfer_2.json	2026-10-19 08:41:53.983418480 -0700
++++ b/tower_rl/graph/graphs/task2-2_cross_tower_transfer_2.json	2026-10-19 08:42:03.403623832 -0700
+@@ -1,6 +1,6 @@
+ {
+  "variant": "task2-2_cross_tower_transfer_2",
+- "version": 4,
++ "version": 5,
+  "retries": 2,
+  "rate_hz": 10,
+  "chunk": {
+@@ -173,5 +173,8 @@
+  "movable": [
+   "source_l1_center",
+   "source_l2_center"
+- ]
++ ],
++ "perception": {
++  "jaw_to_goal": 0.5
++ }
+ }
+diff -ru a/tower_rl/graph/graphs/task2-3_cross_tower_transfer_3.json b/tower_rl/graph/graphs/task2-3_cross_tower_transfer_3.json
+--- a/tower_rl/graph/graphs/task2-3_cross_tower_transfer_3.json	2026-10-19 08:41:53.983418480 -0700
++++ b/tower_rl/graph/graphs/task2-3_cross_tower_transfer_3.json	2026-10-19 08:42:03.403623832 -0700
+@@ -1,6 +1,6 @@
+ {
+  "variant": "task2-3_cross_tower_transfer_3",
+- "version": 4,
++ "version": 5,
+  "retries": 2,
+  "rate_hz": 10,
+  "chunk": {
+@@ -248,5 +248,8 @@
+   "source_l1_center",
+   "source_l2_center",
+   "source_l3_center"
+- ]
++ ],
++ "perception": {
++  "jaw_to_goal": 0.5
++ }
+ }
+diff -ru a/tower_rl/graph/graphs/task3-2_vertical_stacking_2.json b/tower_rl/graph/graphs/task3-2_vertical_stacking_2.json
+--- a/tower_rl/graph/graphs/task3-2_vertical_stacking_2.json	2026-10-19 08:41:53.983418480 -0700
++++ b/tower_rl/graph/graphs/task3-2_vertical_stacking_2.json	2026-10-19 08:42:03.403623832 -0700
+@@ -1,6 +1,6 @@
+ {
+  "variant": "task3-2_vertical_stacking_2",
+- "version": 4,
++ "version": 5,
+  "retries": 2,
+  "rate_hz": 10,
+  "chunk": {
+@@ -165,5 +165,8 @@
+  "movable": [
+   "source_l1_center",
+   "source_l2_center"
+- ]
++ ],
++ "perception": {
++  "jaw_to_goal": 0.5
++ }
+ }
+diff -ru a/tower_rl/graph/graphs/task3-3_vertical_stacking_3.json b/tower_rl/graph/graphs/task3-3_vertical_stacking_3.json
+--- a/tower_rl/graph/graphs/task3-3_vertical_stacking_3.json	2026-10-19 08:41:53.983418480 -0700
++++ b/tower_rl/graph/graphs/task3-3_vertical_stacking_3.json	2026-10-19 08:42:03.403623832 -0700
+@@ -1,6 +1,6 @@
+ {
+  "variant": "task3-3_vertical_stacking_3",
+- "version": 4,
++ "version": 5,
+  "retries": 2,
+  "rate_hz": 10,
+  "chunk": {
+@@ -232,5 +232,8 @@
+   "source_l1_center",
+   "source_l2_center",
+   "source_l3_center"
+- ]
++ ],
++ "perception": {
++  "jaw_to_goal": 0.5
++ }
+ }

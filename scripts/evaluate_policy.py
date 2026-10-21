@@ -83,7 +83,7 @@ else:
     else:
         from tower_rl.graph.executor import Executor  # noqa: E402
         policy = Executor.from_bundle(args.bundle, args.variant, device=str(world.dev), rate_hz=args.rate_hz)
-    sampler = DomainSampler(args.tier, device=world.dev)
+    sampler = DomainSampler(args.tier, device=world.dev, max_blocks=max(6, world.spec.num_movable))
     for b in range((args.episodes + n_envs - 1) // n_envs):
         outs = run_batch(world, policy, sampler, seed=args.seed + b, max_time_s=args.max_time_s, op_cfg=op_cfg, rate_hz=args.rate_hz)
         outcomes += outs[: args.episodes - b * n_envs]

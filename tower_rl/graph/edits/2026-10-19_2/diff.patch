@@ -1,0 +1,272 @@
+diff --git a/tower_rl/graph/edits/2026-10-19_2/graphs_v3/task1-2_tower_transfer_2.json b/tower_rl/graph/graphs/task1-2_tower_transfer_2.json
+index c83f706..0d549c3 100644
+--- a/tower_rl/graph/edits/2026-10-19_2/graphs_v3/task1-2_tower_transfer_2.json
++++ b/tower_rl/graph/graphs/task1-2_tower_transfer_2.json
+@@ -1,6 +1,6 @@
+ {
+  "variant": "task1-2_tower_transfer_2",
+- "version": 3,
++ "version": 4,
+  "retries": 2,
+  "rate_hz": 10,
+  "chunk": {
+@@ -50,7 +50,8 @@
+    "tol_pos_m": 0.03,
+    "tol_rot_deg": 5.0,
+    "timeout_s": 20.0,
+-   "held": true
++   "held": true,
++   "v_max_held": 0.08
+   },
+   {
+    "id": "t0_place",
+@@ -115,7 +116,8 @@
+    "tol_pos_m": 0.03,
+    "tol_rot_deg": 5.0,
+    "timeout_s": 20.0,
+-   "held": true
++   "held": true,
++   "v_max_held": 0.08
+   },
+   {
+    "id": "t1_place",
+@@ -188,7 +190,8 @@
+    "tol_pos_m": 0.03,
+    "tol_rot_deg": 5.0,
+    "timeout_s": 20.0,
+-   "held": true
++   "held": true,
++   "v_max_held": 0.08
+   },
+   {
+    "id": "t2_place",
+@@ -253,7 +256,8 @@
+    "tol_pos_m": 0.03,
+    "tol_rot_deg": 5.0,
+    "timeout_s": 20.0,
+-   "held": true
++   "held": true,
++   "v_max_held": 0.08
+   },
+   {
+    "id": "t3_place",
+diff --git a/tower_rl/graph/edits/2026-10-19_2/graphs_v3/task1-3_tower_transfer_3.json b/tower_rl/graph/graphs/task1-3_tower_transfer_3.json
+index d447132..45e38ac 100644
+--- a/tower_rl/graph/edits/2026-10-19_2/graphs_v3/task1-3_tower_transfer_3.json
++++ b/tower_rl/graph/graphs/task1-3_tower_transfer_3.json
+@@ -1,6 +1,6 @@
+ {
+  "variant": "task1-3_tower_transfer_3",
+- "version": 3,
++ "version": 4,
+  "retries": 2,
+  "rate_hz": 10,
+  "chunk": {
+@@ -50,7 +50,8 @@
+    "tol_pos_m": 0.03,
+    "tol_rot_deg": 5.0,
+    "timeout_s": 20.0,
+-   "held": true
++   "held": true,
++   "v_max_held": 0.08
+   },
+   {
+    "id": "t0_place",
+@@ -115,7 +116,8 @@
+    "tol_pos_m": 0.03,
+    "tol_rot_deg": 5.0,
+    "timeout_s": 20.0,
+-   "held": true
++   "held": true,
++   "v_max_held": 0.08
+   },
+   {
+    "id": "t1_place",
+@@ -188,7 +190,8 @@
+    "tol_pos_m": 0.03,
+    "tol_rot_deg": 5.0,
+    "timeout_s": 20.0,
+-   "held": true
++   "held": true,
++   "v_max_held": 0.08
+   },
+   {
+    "id": "t2_place",
+@@ -253,7 +256,8 @@
+    "tol_pos_m": 0.03,
+    "tol_rot_deg": 5.0,
+    "timeout_s": 20.0,
+-   "held": true
++   "held": true,
++   "v_max_held": 0.08
+   },
+   {
+    "id": "t3_place",
+@@ -326,7 +330,8 @@
+    "tol_pos_m": 0.03,
+    "tol_rot_deg": 5.0,
+    "timeout_s": 20.0,
+-   "held": true
++   "held": true,
++   "v_max_held": 0.08
+   },
+   {
+    "id": "t4_place",
+@@ -391,7 +396,8 @@
+    "tol_pos_m": 0.03,
+    "tol_rot_deg": 5.0,
+    "timeout_s": 20.0,
+-   "held": true
++   "held": true,
++   "v_max_held": 0.08
+   },
+   {
+    "id": "t5_place",
+diff --git a/tower_rl/graph/edits/2026-10-19_2/graphs_v3/task2-2_cross_tower_transfer_2.json b/tower_rl/graph/graphs/task2-2_cross_tower_transfer_2.json
+index b3cc688..7d0ca83 100644
+--- a/tower_rl/graph/edits/2026-10-19_2/graphs_v3/task2-2_cross_tower_transfer_2.json
++++ b/tower_rl/graph/graphs/task2-2_cross_tower_transfer_2.json
+@@ -1,6 +1,6 @@
+ {
+  "variant": "task2-2_cross_tower_transfer_2",
+- "version": 3,
++ "version": 4,
+  "retries": 2,
+  "rate_hz": 10,
+  "chunk": {
+@@ -50,7 +50,8 @@
+    "tol_pos_m": 0.03,
+    "tol_rot_deg": 5.0,
+    "timeout_s": 20.0,
+-   "held": true
++   "held": true,
++   "v_max_held": 0.08
+   },
+   {
+    "id": "t0_place",
+@@ -123,7 +124,8 @@
+    "tol_pos_m": 0.03,
+    "tol_rot_deg": 5.0,
+    "timeout_s": 20.0,
+-   "held": true
++   "held": true,
++   "v_max_held": 0.08
+   },
+   {
+    "id": "t1_place",
+diff --git a/tower_rl/graph/edits/2026-10-19_2/graphs_v3/task2-3_cross_tower_transfer_3.json b/tower_rl/graph/graphs/task2-3_cross_tower_transfer_3.json
+index d6872ca..65e35d2 100644
+--- a/tower_rl/graph/edits/2026-10-19_2/graphs_v3/task2-3_cross_tower_transfer_3.json
++++ b/tower_rl/graph/graphs/task2-3_cross_tower_transfer_3.json
+@@ -1,6 +1,6 @@
+ {
+  "variant": "task2-3_cross_tower_transfer_3",
+- "version": 3,
++ "version": 4,
+  "retries": 2,
+  "rate_hz": 10,
+  "chunk": {
+@@ -50,7 +50,8 @@
+    "tol_pos_m": 0.03,
+    "tol_rot_deg": 5.0,
+    "timeout_s": 20.0,
+-   "held": true
++   "held": true,
++   "v_max_held": 0.08
+   },
+   {
+    "id": "t0_place",
+@@ -123,7 +124,8 @@
+    "tol_pos_m": 0.03,
+    "tol_rot_deg": 5.0,
+    "timeout_s": 20.0,
+-   "held": true
++   "held": true,
++   "v_max_held": 0.08
+   },
+   {
+    "id": "t1_place",
+@@ -196,7 +198,8 @@
+    "tol_pos_m": 0.03,
+    "tol_rot_deg": 5.0,
+    "timeout_s": 20.0,
+-   "held": true
++   "held": true,
++   "v_max_held": 0.08
+   },
+   {
+    "id": "t2_place",
+diff --git a/tower_rl/graph/edits/2026-10-19_2/graphs_v3/task3-2_vertical_stacking_2.json b/tower_rl/graph/graphs/task3-2_vertical_stacking_2.json
+index df3df6f..ae88691 100644
+--- a/tower_rl/graph/edits/2026-10-19_2/graphs_v3/task3-2_vertical_stacking_2.json
++++ b/tower_rl/graph/graphs/task3-2_vertical_stacking_2.json
+@@ -1,6 +1,6 @@
+ {
+  "variant": "task3-2_vertical_stacking_2",
+- "version": 3,
++ "version": 4,
+  "retries": 2,
+  "rate_hz": 10,
+  "chunk": {
+@@ -50,7 +50,8 @@
+    "tol_pos_m": 0.03,
+    "tol_rot_deg": 5.0,
+    "timeout_s": 20.0,
+-   "held": true
++   "held": true,
++   "v_max_held": 0.08
+   },
+   {
+    "id": "t0_place",
+@@ -115,7 +116,8 @@
+    "tol_pos_m": 0.03,
+    "tol_rot_deg": 5.0,
+    "timeout_s": 20.0,
+-   "held": true
++   "held": true,
++   "v_max_held": 0.08
+   },
+   {
+    "id": "t1_place",
+diff --git a/tower_rl/graph/edits/2026-10-19_2/graphs_v3/task3-3_vertical_stacking_3.json b/tower_rl/graph/graphs/task3-3_vertical_stacking_3.json
+index bae5767..5a2a40d 100644
+--- a/tower_rl/graph/edits/2026-10-19_2/graphs_v3/task3-3_vertical_stacking_3.json
++++ b/tower_rl/graph/graphs/task3-3_vertical_stacking_3.json
+@@ -1,6 +1,6 @@
+ {
+  "variant": "task3-3_vertical_stacking_3",
+- "version": 3,
++ "version": 4,
+  "retries": 2,
+  "rate_hz": 10,
+  "chunk": {
+@@ -50,7 +50,8 @@
+    "tol_pos_m": 0.03,
+    "tol_rot_deg": 5.0,
+    "timeout_s": 20.0,
+-   "held": true
++   "held": true,
++   "v_max_held": 0.08
+   },
+   {
+    "id": "t0_place",
+@@ -115,7 +116,8 @@
+    "tol_pos_m": 0.03,
+    "tol_rot_deg": 5.0,
+    "timeout_s": 20.0,
+-   "held": true
++   "held": true,
++   "v_max_held": 0.08
+   },
+   {
+    "id": "t1_place",
+@@ -180,7 +182,8 @@
+    "tol_pos_m": 0.03,
+    "tol_rot_deg": 5.0,
+    "timeout_s": 20.0,
+-   "held": true
++   "held": true,
++   "v_max_held": 0.08
+   },
+   {
+    "id": "t2_place",

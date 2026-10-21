@@ -1,0 +1,63 @@
+{
+ "config": {
+  "variant": "task1-3_tower_transfer_3",
+  "tier": "D1",
+  "episodes": 48,
+  "seed": 9000,
+  "bundle": "results/bundles/probe_v4grasps",
+  "perception_noise": false,
+  "noise": {},
+  "rate_hz": 10,
+  "finger_friction": [
+   2.4,
+   2.0
+  ],
+  "device": "cpu"
+ },
+ "metrics": {
+  "episodes": 48,
+  "TSR": {
+   "value": 0.8333,
+   "k": 40,
+   "n": 48,
+   "wilson95": [
+    0.7042,
+    0.913
+   ]
+  },
+  "GSR": {
+   "value": 0.9826,
+   "k": 283,
+   "n": 288,
+   "wilson95": [
+    0.96,
+    0.9926
+   ]
+  },
+  "PSR": {
+   "value": 0.9306,
+   "k": 268,
+   "n": 288,
+   "wilson95": [
+    0.8952,
+    0.9546
+   ]
+  },
+  "LHPR": {
+   "value": 0.9566,
+   "k": 551,
+   "n": 576,
+   "wilson95": [
+    0.9367,
+    0.9704
+   ]
+  },
+  "ODR": {
+   "value": 0.0668,
+   "disturbed": 39,
+   "steps": 584
+  },
+  "policy_errors": 0,
+  "mean_duration_s": 128.6
+ }
+}

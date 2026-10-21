@@ -1,0 +1,314 @@
+{
+ "variant": "task1-2_tower_transfer_2",
+ "version": 5,
+ "retries": 2,
+ "rate_hz": 10,
+ "chunk": {
+  "transit": 16,
+  "contact": 1
+ },
+ "nodes": [
+  {
+   "id": "t0_to_pregrasp",
+   "skill": "transit",
+   "arm": "back",
+   "transfer": 0,
+   "block": "source_l2_a",
+   "target": "pregrasp",
+   "height_m": 0.06,
+   "tol_pos_m": 0.03,
+   "tol_rot_deg": 5.0,
+   "timeout_s": 15.0,
+   "first_of_transfer": true
+  },
+  {
+   "id": "t0_grasp",
+   "skill": "grasp_lift",
+   "arm": "back",
+   "transfer": 0,
+   "block": "source_l2_a",
+   "lift_m": 0.06,
+   "timeout_s": 15.0
+  },
+  {
+   "id": "t0_to_preplace",
+   "skill": "transit",
+   "arm": "back",
+   "transfer": 0,
+   "block": "source_l2_a",
+   "target": "preplace",
+   "dest_layer": 1,
+   "goal_in_pad": {
+    "pos": [
+     -0.050001,
+     -7.2e-05,
+     0.045
+    ],
+    "yaw_deg": -90.0
+   },
+   "height_m": 0.05,
+   "tol_pos_m": 0.03,
+   "tol_rot_deg": 5.0,
+   "timeout_s": 20.0,
+   "held": true,
+   "v_max_held": 0.08
+  },
+  {
+   "id": "t0_place",
+   "skill": "place_release",
+   "arm": "back",
+   "transfer": 0,
+   "block": "source_l2_a",
+   "dest_layer": 1,
+   "goal_in_pad": {
+    "pos": [
+     -0.050001,
+     -7.2e-05,
+     0.045
+    ],
+    "yaw_deg": -90.0
+   },
+   "release_clearance_m": 0.005,
+   "tol_pos_m": 0.005,
+   "tol_yaw_deg": 5.0,
+   "settle_s": 1.0,
+   "timeout_s": 20.0
+  },
+  {
+   "id": "t1_to_pregrasp",
+   "skill": "transit",
+   "arm": "back",
+   "transfer": 1,
+   "block": "source_l2_b",
+   "target": "pregrasp",
+   "height_m": 0.06,
+   "tol_pos_m": 0.03,
+   "tol_rot_deg": 5.0,
+   "timeout_s": 15.0,
+   "first_of_transfer": true
+  },
+  {
+   "id": "t1_grasp",
+   "skill": "grasp_lift",
+   "arm": "back",
+   "transfer": 1,
+   "block": "source_l2_b",
+   "lift_m": 0.06,
+   "timeout_s": 15.0
+  },
+  {
+   "id": "t1_to_preplace",
+   "skill": "transit",
+   "arm": "back",
+   "transfer": 1,
+   "block": "source_l2_b",
+   "target": "preplace",
+   "dest_layer": 1,
+   "goal_in_pad": {
+    "pos": [
+     0.049999,
+     -7.2e-05,
+     0.045
+    ],
+    "yaw_deg": -90.0
+   },
+   "height_m": 0.05,
+   "tol_pos_m": 0.03,
+   "tol_rot_deg": 5.0,
+   "timeout_s": 20.0,
+   "held": true,
+   "v_max_held": 0.08
+  },
+  {
+   "id": "t1_place",
+   "skill": "place_release",
+   "arm": "back",
+   "transfer": 1,
+   "block": "source_l2_b",
+   "dest_layer": 1,
+   "goal_in_pad": {
+    "pos": [
+     0.049999,
+     -7.2e-05,
+     0.045
+    ],
+    "yaw_deg": -90.0
+   },
+   "release_clearance_m": 0.005,
+   "tol_pos_m": 0.005,
+   "tol_yaw_deg": 5.0,
+   "settle_s": 1.0,
+   "timeout_s": 20.0
+  },
+  {
+   "id": "park_back_2",
+   "skill": "park",
+   "arm": "back",
+   "transfer": 2,
+   "timeout_s": 12.0,
+   "first_of_transfer": false
+  },
+  {
+   "id": "t2_to_pregrasp",
+   "skill": "transit",
+   "arm": "left",
+   "transfer": 2,
+   "block": "source_l1_a",
+   "target": "pregrasp",
+   "height_m": 0.06,
+   "tol_pos_m": 0.03,
+   "tol_rot_deg": 5.0,
+   "timeout_s": 15.0,
+   "first_of_transfer": true
+  },
+  {
+   "id": "t2_grasp",
+   "skill": "grasp_lift",
+   "arm": "left",
+   "transfer": 2,
+   "block": "source_l1_a",
+   "lift_m": 0.06,
+   "timeout_s": 15.0
+  },
+  {
+   "id": "t2_to_preplace",
+   "skill": "transit",
+   "arm": "left",
+   "transfer": 2,
+   "block": "source_l1_a",
+   "target": "preplace",
+   "dest_layer": 2,
+   "goal_in_pad": {
+    "pos": [
+     -1e-06,
+     -0.050072,
+     0.075
+    ],
+    "yaw_deg": 0.0
+   },
+   "height_m": 0.05,
+   "tol_pos_m": 0.03,
+   "tol_rot_deg": 5.0,
+   "timeout_s": 20.0,
+   "held": true,
+   "v_max_held": 0.08
+  },
+  {
+   "id": "t2_place",
+   "skill": "place_release",
+   "arm": "left",
+   "transfer": 2,
+   "block": "source_l1_a",
+   "dest_layer": 2,
+   "goal_in_pad": {
+    "pos": [
+     -1e-06,
+     -0.050072,
+     0.075
+    ],
+    "yaw_deg": 0.0
+   },
+   "release_clearance_m": 0.005,
+   "tol_pos_m": 0.005,
+   "tol_yaw_deg": 5.0,
+   "settle_s": 1.0,
+   "timeout_s": 20.0
+  },
+  {
+   "id": "t3_to_pregrasp",
+   "skill": "transit",
+   "arm": "left",
+   "transfer": 3,
+   "block": "source_l1_b",
+   "target": "pregrasp",
+   "height_m": 0.06,
+   "tol_pos_m": 0.03,
+   "tol_rot_deg": 5.0,
+   "timeout_s": 15.0,
+   "first_of_transfer": true
+  },
+  {
+   "id": "t3_grasp",
+   "skill": "grasp_lift",
+   "arm": "left",
+   "transfer": 3,
+   "block": "source_l1_b",
+   "lift_m": 0.06,
+   "timeout_s": 15.0
+  },
+  {
+   "id": "t3_to_preplace",
+   "skill": "transit",
+   "arm": "left",
+   "transfer": 3,
+   "block": "source_l1_b",
+   "target": "preplace",
+   "dest_layer": 2,
+   "goal_in_pad": {
+    "pos": [
+     -1e-06,
+     0.049928,
+     0.075
+    ],
+    "yaw_deg": 0.0
+   },
+   "height_m": 0.05,
+   "tol_pos_m": 0.03,
+   "tol_rot_deg": 5.0,
+   "timeout_s": 20.0,
+   "held": true,
+   "v_max_held": 0.08
+  },
+  {
+   "id": "t3_place",
+   "skill": "place_release",
+   "arm": "left",
+   "transfer": 3,
+   "block": "source_l1_b",
+   "dest_layer": 2,
+   "goal_in_pad": {
+    "pos": [
+     -1e-06,
+     0.049928,
+     0.075
+    ],
+    "yaw_deg": 0.0
+   },
+   "release_clearance_m": 0.005,
+   "tol_pos_m": 0.005,
+   "tol_yaw_deg": 5.0,
+   "settle_s": 1.0,
+   "timeout_s": 20.0
+  },
+  {
+   "id": "park_left_end",
+   "skill": "park",
+   "arm": "left",
+   "transfer": 4,
+   "timeout_s": 12.0,
+   "first_of_transfer": false
+  }
+ ],
+ "foundation": {
+  "destination": [
+   "destination_base_0",
+   "destination_base_1",
+   "destination_base_2"
+  ],
+  "source": [
+   "source_base_0",
+   "source_base_1",
+   "source_base_2"
+  ],
+  "destination_yaw_deg": 0.0
+ },
+ "movable": [
+  "source_l1_a",
+  "source_l1_b",
+  "source_l2_a",
+  "source_l2_b"
+ ],
+ "perception": {
+  "jaw_to_goal": 0.5
+ }
+}

@@ -1,0 +1,286 @@
+diff -ru tower_rl/graph/edits/2026-10-19_1/graphs_before/task1-2_tower_transfer_2.json tower_rl/graph/graphs/task1-2_tower_transfer_2.json
+--- tower_rl/graph/edits/2026-10-19_1/graphs_before/task1-2_tower_transfer_2.json	2026-10-19 00:48:43.419269226 -0700
++++ tower_rl/graph/graphs/task1-2_tower_transfer_2.json	2026-10-19 00:48:43.467270248 -0700
+@@ -1,6 +1,6 @@
+ {
+  "variant": "task1-2_tower_transfer_2",
+- "version": 1,
++ "version": 2,
+  "retries": 2,
+  "rate_hz": 10,
+  "chunk": {
+@@ -71,7 +71,9 @@
+    "tol_pos_m": 0.005,
+    "tol_yaw_deg": 5.0,
+    "settle_s": 1.0,
+-   "timeout_s": 20.0
++   "timeout_s": 20.0,
++   "on_fail": "skip_if_close",
++   "skip_if_close_m": 0.015
+   },
+   {
+    "id": "t1_to_pregrasp",
+@@ -136,7 +138,9 @@
+    "tol_pos_m": 0.005,
+    "tol_yaw_deg": 5.0,
+    "settle_s": 1.0,
+-   "timeout_s": 20.0
++   "timeout_s": 20.0,
++   "on_fail": "skip_if_close",
++   "skip_if_close_m": 0.015
+   },
+   {
+    "id": "park_back_2",
+@@ -209,7 +213,9 @@
+    "tol_pos_m": 0.005,
+    "tol_yaw_deg": 5.0,
+    "settle_s": 1.0,
+-   "timeout_s": 20.0
++   "timeout_s": 20.0,
++   "on_fail": "skip_if_close",
++   "skip_if_close_m": 0.015
+   },
+   {
+    "id": "t3_to_pregrasp",
+@@ -274,7 +280,9 @@
+    "tol_pos_m": 0.005,
+    "tol_yaw_deg": 5.0,
+    "settle_s": 1.0,
+-   "timeout_s": 20.0
++   "timeout_s": 20.0,
++   "on_fail": "skip_if_close",
++   "skip_if_close_m": 0.015
+   },
+   {
+    "id": "park_left_end",
+diff -ru tower_rl/graph/edits/2026-10-19_1/graphs_before/task1-3_tower_transfer_3.json tower_rl/graph/graphs/task1-3_tower_transfer_3.json
+--- tower_rl/graph/edits/2026-10-19_1/graphs_before/task1-3_tower_transfer_3.json	2026-10-19 00:48:43.419269226 -0700
++++ tower_rl/graph/graphs/task1-3_tower_transfer_3.json	2026-10-19 00:48:43.467270248 -0700
+@@ -1,6 +1,6 @@
+ {
+  "variant": "task1-3_tower_transfer_3",
+- "version": 1,
++ "version": 2,
+  "retries": 2,
+  "rate_hz": 10,
+  "chunk": {
+@@ -71,7 +71,9 @@
+    "tol_pos_m": 0.005,
+    "tol_yaw_deg": 5.0,
+    "settle_s": 1.0,
+-   "timeout_s": 20.0
++   "timeout_s": 20.0,
++   "on_fail": "skip_if_close",
++   "skip_if_close_m": 0.015
+   },
+   {
+    "id": "t1_to_pregrasp",
+@@ -136,7 +138,9 @@
+    "tol_pos_m": 0.005,
+    "tol_yaw_deg": 5.0,
+    "settle_s": 1.0,
+-   "timeout_s": 20.0
++   "timeout_s": 20.0,
++   "on_fail": "skip_if_close",
++   "skip_if_close_m": 0.015
+   },
+   {
+    "id": "park_left_2",
+@@ -209,7 +213,9 @@
+    "tol_pos_m": 0.005,
+    "tol_yaw_deg": 5.0,
+    "settle_s": 1.0,
+-   "timeout_s": 20.0
++   "timeout_s": 20.0,
++   "on_fail": "skip_if_close",
++   "skip_if_close_m": 0.015
+   },
+   {
+    "id": "t3_to_pregrasp",
+@@ -274,7 +280,9 @@
+    "tol_pos_m": 0.005,
+    "tol_yaw_deg": 5.0,
+    "settle_s": 1.0,
+-   "timeout_s": 20.0
++   "timeout_s": 20.0,
++   "on_fail": "skip_if_close",
++   "skip_if_close_m": 0.015
+   },
+   {
+    "id": "park_back_4",
+@@ -347,7 +355,9 @@
+    "tol_pos_m": 0.005,
+    "tol_yaw_deg": 5.0,
+    "settle_s": 1.0,
+-   "timeout_s": 20.0
++   "timeout_s": 20.0,
++   "on_fail": "skip_if_close",
++   "skip_if_close_m": 0.015
+   },
+   {
+    "id": "t5_to_pregrasp",
+@@ -412,7 +422,9 @@
+    "tol_pos_m": 0.005,
+    "tol_yaw_deg": 5.0,
+    "settle_s": 1.0,
+-   "timeout_s": 20.0
++   "timeout_s": 20.0,
++   "on_fail": "skip_if_close",
++   "skip_if_close_m": 0.015
+   },
+   {
+    "id": "park_left_end",
+diff -ru tower_rl/graph/edits/2026-10-19_1/graphs_before/task2-2_cross_tower_transfer_2.json tower_rl/graph/graphs/task2-2_cross_tower_transfer_2.json
+--- tower_rl/graph/edits/2026-10-19_1/graphs_before/task2-2_cross_tower_transfer_2.json	2026-10-19 00:48:43.419269226 -0700
++++ tower_rl/graph/graphs/task2-2_cross_tower_transfer_2.json	2026-10-19 00:48:43.467270248 -0700
+@@ -1,6 +1,6 @@
+ {
+  "variant": "task2-2_cross_tower_transfer_2",
+- "version": 1,
++ "version": 2,
+  "retries": 2,
+  "rate_hz": 10,
+  "chunk": {
+@@ -71,7 +71,9 @@
+    "tol_pos_m": 0.005,
+    "tol_yaw_deg": 5.0,
+    "settle_s": 1.0,
+-   "timeout_s": 20.0
++   "timeout_s": 20.0,
++   "on_fail": "skip_if_close",
++   "skip_if_close_m": 0.015
+   },
+   {
+    "id": "park_left_1",
+@@ -144,7 +146,9 @@
+    "tol_pos_m": 0.005,
+    "tol_yaw_deg": 5.0,
+    "settle_s": 1.0,
+-   "timeout_s": 20.0
++   "timeout_s": 20.0,
++   "on_fail": "skip_if_close",
++   "skip_if_close_m": 0.015
+   },
+   {
+    "id": "park_back_end",
+diff -ru tower_rl/graph/edits/2026-10-19_1/graphs_before/task2-3_cross_tower_transfer_3.json tower_rl/graph/graphs/task2-3_cross_tower_transfer_3.json
+--- tower_rl/graph/edits/2026-10-19_1/graphs_before/task2-3_cross_tower_transfer_3.json	2026-10-19 00:48:43.419269226 -0700
++++ tower_rl/graph/graphs/task2-3_cross_tower_transfer_3.json	2026-10-19 00:48:43.467270248 -0700
+@@ -1,6 +1,6 @@
+ {
+  "variant": "task2-3_cross_tower_transfer_3",
+- "version": 1,
++ "version": 2,
+  "retries": 2,
+  "rate_hz": 10,
+  "chunk": {
+@@ -71,7 +71,9 @@
+    "tol_pos_m": 0.005,
+    "tol_yaw_deg": 5.0,
+    "settle_s": 1.0,
+-   "timeout_s": 20.0
++   "timeout_s": 20.0,
++   "on_fail": "skip_if_close",
++   "skip_if_close_m": 0.015
+   },
+   {
+    "id": "park_back_1",
+@@ -144,7 +146,9 @@
+    "tol_pos_m": 0.005,
+    "tol_yaw_deg": 5.0,
+    "settle_s": 1.0,
+-   "timeout_s": 20.0
++   "timeout_s": 20.0,
++   "on_fail": "skip_if_close",
++   "skip_if_close_m": 0.015
+   },
+   {
+    "id": "park_left_2",
+@@ -217,7 +221,9 @@
+    "tol_pos_m": 0.005,
+    "tol_yaw_deg": 5.0,
+    "settle_s": 1.0,
+-   "timeout_s": 20.0
++   "timeout_s": 20.0,
++   "on_fail": "skip_if_close",
++   "skip_if_close_m": 0.015
+   },
+   {
+    "id": "park_back_end",
+diff -ru tower_rl/graph/edits/2026-10-19_1/graphs_before/task3-2_vertical_stacking_2.json tower_rl/graph/graphs/task3-2_vertical_stacking_2.json
+--- tower_rl/graph/edits/2026-10-19_1/graphs_before/task3-2_vertical_stacking_2.json	2026-10-19 00:48:43.419269226 -0700
++++ tower_rl/graph/graphs/task3-2_vertical_stacking_2.json	2026-10-19 00:48:43.467270248 -0700
+@@ -1,6 +1,6 @@
+ {
+  "variant": "task3-2_vertical_stacking_2",
+- "version": 1,
++ "version": 2,
+  "retries": 2,
+  "rate_hz": 10,
+  "chunk": {
+@@ -71,7 +71,9 @@
+    "tol_pos_m": 0.005,
+    "tol_yaw_deg": 5.0,
+    "settle_s": 1.0,
+-   "timeout_s": 20.0
++   "timeout_s": 20.0,
++   "on_fail": "skip_if_close",
++   "skip_if_close_m": 0.015
+   },
+   {
+    "id": "t1_to_pregrasp",
+@@ -136,7 +138,9 @@
+    "tol_pos_m": 0.005,
+    "tol_yaw_deg": 5.0,
+    "settle_s": 1.0,
+-   "timeout_s": 20.0
++   "timeout_s": 20.0,
++   "on_fail": "skip_if_close",
++   "skip_if_close_m": 0.015
+   },
+   {
+    "id": "park_back_end",
+diff -ru tower_rl/graph/edits/2026-10-19_1/graphs_before/task3-3_vertical_stacking_3.json tower_rl/graph/graphs/task3-3_vertical_stacking_3.json
+--- tower_rl/graph/edits/2026-10-19_1/graphs_before/task3-3_vertical_stacking_3.json	2026-10-19 00:48:43.419269226 -0700
++++ tower_rl/graph/graphs/task3-3_vertical_stacking_3.json	2026-10-19 00:48:43.467270248 -0700
+@@ -1,6 +1,6 @@
+ {
+  "variant": "task3-3_vertical_stacking_3",
+- "version": 1,
++ "version": 2,
+  "retries": 2,
+  "rate_hz": 10,
+  "chunk": {
+@@ -71,7 +71,9 @@
+    "tol_pos_m": 0.005,
+    "tol_yaw_deg": 5.0,
+    "settle_s": 1.0,
+-   "timeout_s": 20.0
++   "timeout_s": 20.0,
++   "on_fail": "skip_if_close",
++   "skip_if_close_m": 0.015
+   },
+   {
+    "id": "t1_to_pregrasp",
+@@ -136,7 +138,9 @@
+    "tol_pos_m": 0.005,
+    "tol_yaw_deg": 5.0,
+    "settle_s": 1.0,
+-   "timeout_s": 20.0
++   "timeout_s": 20.0,
++   "on_fail": "skip_if_close",
++   "skip_if_close_m": 0.015
+   },
+   {
+    "id": "t2_to_pregrasp",
+@@ -201,7 +205,9 @@
+    "tol_pos_m": 0.005,
+    "tol_yaw_deg": 5.0,
+    "settle_s": 1.0,
+-   "timeout_s": 20.0
++   "timeout_s": 20.0,
++   "on_fail": "skip_if_close",
++   "skip_if_close_m": 0.015
+   },
+   {
+    "id": "park_back_end",

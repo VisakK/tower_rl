@@ -1,0 +1,206 @@
+{
+ "variant": "task5-2_tower_insertion_2",
+ "family": "insertion",
+ "version": 1,
+ "retries": 2,
+ "rate_hz": 10,
+ "gripper_closed_width": 0.0425,
+ "grasp_planned": true,
+ "chunk": {
+  "transit": 16,
+  "contact": 1
+ },
+ "nodes": [
+  {
+   "id": "i0_to_pregrasp",
+   "skill": "transit",
+   "arm": "left",
+   "transfer": 0,
+   "block": "source_l1_insert",
+   "target": "pregrasp",
+   "height_m": 0.04,
+   "tol_pos_m": 0.03,
+   "tol_rot_deg": 5.0,
+   "timeout_s": 15.0,
+   "first_of_transfer": true
+  },
+  {
+   "id": "i0_grasp",
+   "skill": "grasp_lift",
+   "arm": "left",
+   "transfer": 0,
+   "block": "source_l1_insert",
+   "lift_m": 0.06,
+   "timeout_s": 15.0,
+   "lift_v_m_s": 0.04,
+   "lift_a_m_s2": 0.1
+  },
+  {
+   "id": "i0_to_preinsert",
+   "skill": "transit",
+   "arm": "left",
+   "transfer": 0,
+   "block": "source_l1_insert",
+   "target": "preinsert",
+   "goal_in_pad": {
+    "pos": [
+     -0.0,
+     -0.0,
+     0.045
+    ],
+    "yaw_deg": -90.0
+   },
+   "dest_layer": 1,
+   "goal_z": 0.045,
+   "direction": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "side_blocks": [
+    "destination_l1_side_+1",
+    "destination_l1_side_-1"
+   ],
+   "outside_m": 0.17,
+   "tol_pos_m": 0.01,
+   "tol_rot_deg": 3.0,
+   "timeout_s": 25.0,
+   "held": true,
+   "v_max_held": 0.06
+  },
+  {
+   "id": "i0_insert",
+   "skill": "insert",
+   "arm": "left",
+   "transfer": 0,
+   "block": "source_l1_insert",
+   "goal_in_pad": {
+    "pos": [
+     -0.0,
+     -0.0,
+     0.045
+    ],
+    "yaw_deg": -90.0
+   },
+   "dest_layer": 1,
+   "goal_z": 0.045,
+   "direction": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "side_blocks": [
+    "destination_l1_side_+1",
+    "destination_l1_side_-1"
+   ],
+   "entry_m": 0.09,
+   "entry_lift_m": 0.0,
+   "timeout_s": 30.0,
+   "on_fail": "skip"
+  },
+  {
+   "id": "i0_to_prepushin",
+   "skill": "transit",
+   "arm": "left",
+   "transfer": 0,
+   "block": "source_l1_insert",
+   "target": "prepushin",
+   "goal_in_pad": {
+    "pos": [
+     -0.0,
+     -0.0,
+     0.045
+    ],
+    "yaw_deg": -90.0
+   },
+   "dest_layer": 1,
+   "goal_z": 0.045,
+   "direction": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "side_blocks": [
+    "destination_l1_side_+1",
+    "destination_l1_side_-1"
+   ],
+   "tol_pos_m": 0.01,
+   "tol_rot_deg": 3.0,
+   "timeout_s": 15.0
+  },
+  {
+   "id": "i0_push_in",
+   "skill": "push_in",
+   "arm": "left",
+   "transfer": 0,
+   "block": "source_l1_insert",
+   "goal_in_pad": {
+    "pos": [
+     -0.0,
+     -0.0,
+     0.045
+    ],
+    "yaw_deg": -90.0
+   },
+   "dest_layer": 1,
+   "goal_z": 0.045,
+   "direction": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "side_blocks": [
+    "destination_l1_side_+1",
+    "destination_l1_side_-1"
+   ],
+   "tol_pos_m": 0.004,
+   "timeout_s": 20.0,
+   "on_fail": "skip",
+   "gap_below": false
+  },
+  {
+   "id": "park_left_end",
+   "skill": "park",
+   "arm": "left",
+   "transfer": 1,
+   "timeout_s": 12.0,
+   "first_of_transfer": false
+  }
+ ],
+ "foundation": {
+  "destination": [
+   "destination_base_0",
+   "destination_base_1",
+   "destination_base_2"
+  ],
+  "source": [
+   "source_base_0",
+   "source_base_1",
+   "source_base_2"
+  ],
+  "destination_yaw_deg": -90.0
+ },
+ "tower": {
+  "pad": "destination",
+  "foundation": [
+   "destination_base_0",
+   "destination_base_1",
+   "destination_base_2"
+  ],
+  "structure": [
+   "destination_l1_side_-1",
+   "destination_l1_side_+1",
+   "destination_l2_roof_0",
+   "destination_l2_roof_1",
+   "destination_l2_roof_2"
+  ]
+ },
+ "movable": [
+  "destination_l1_side_-1",
+  "destination_l1_side_+1",
+  "destination_l2_roof_0",
+  "destination_l2_roof_1",
+  "destination_l2_roof_2",
+  "source_l1_insert"
+ ]
+}

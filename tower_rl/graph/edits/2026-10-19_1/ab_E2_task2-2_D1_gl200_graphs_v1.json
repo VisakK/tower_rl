@@ -1,0 +1,63 @@
+{
+ "config": {
+  "variant": "task2-2_cross_tower_transfer_2",
+  "tier": "D1",
+  "episodes": 8,
+  "seed": 1000,
+  "bundle": "results/bundles/grasp_left_v3_200",
+  "perception_noise": false,
+  "noise": {},
+  "rate_hz": 10,
+  "finger_friction": [
+   2.4,
+   2.0
+  ],
+  "device": "cpu"
+ },
+ "metrics": {
+  "episodes": 8,
+  "TSR": {
+   "value": 1.0,
+   "k": 8,
+   "n": 8,
+   "wilson95": [
+    0.6756,
+    1.0
+   ]
+  },
+  "GSR": {
+   "value": 1.0,
+   "k": 16,
+   "n": 16,
+   "wilson95": [
+    0.8064,
+    1.0
+   ]
+  },
+  "PSR": {
+   "value": 1.0,
+   "k": 16,
+   "n": 16,
+   "wilson95": [
+    0.8064,
+    1.0
+   ]
+  },
+  "LHPR": {
+   "value": 1.0,
+   "k": 32,
+   "n": 32,
+   "wilson95": [
+    0.8928,
+    1.0
+   ]
+  },
+  "ODR": {
+   "value": 0.0,
+   "disturbed": 0,
+   "steps": 32
+  },
+  "policy_errors": 0,
+  "mean_duration_s": 45.81
+ }
+}

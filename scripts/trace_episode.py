@@ -150,7 +150,7 @@ if args.fine:
 
     world._substep = substep_logged
 for k in range(args.prior_batches, 0, -1):  # the same simulator history as the rehearsal process
-    run_batch(world, ex, DomainSampler(args.tier, device=world.dev), seed=args.seed - 100 * k, max_time_s=args.max_time_s,
+    run_batch(world, ex, DomainSampler(args.tier, device=world.dev, max_blocks=max(6, world.spec.num_movable)), seed=args.seed - 100 * k, max_time_s=args.max_time_s,
               rate_hz=args.rate_hz)
 if video is not None or args.live:  # render after every row of the traced batch (not of the prior batches)
     apply_row0 = world.apply_row
@@ -184,7 +184,7 @@ if video is not None or args.live:  # render after every row of the traced batch
 
     world.apply_row = apply_row_viewed
 with open(args.out or os.devnull, "w") as f:
-    outs = run_batch(world, TracingExecutor(ex, args.env, f), DomainSampler(args.tier, device=world.dev), seed=args.seed,
+    outs = run_batch(world, TracingExecutor(ex, args.env, f), DomainSampler(args.tier, device=world.dev, max_blocks=max(6, world.spec.num_movable)), seed=args.seed,
                      max_time_s=args.max_time_s, rate_hz=args.rate_hz)
 if video is not None:
     video.close()
