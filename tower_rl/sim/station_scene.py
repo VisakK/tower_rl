@@ -49,8 +49,9 @@ def block_order(layout: Layout) -> list[str]:
     return f + sorted(layout.movable_ids, key=lambda b: (layout.layer[b], b))
 
 
-def camera_cfgs(meta: dict, scale: float = 1.0) -> dict[str, TiledCameraCfg]:
-    """The evaluator's four cameras (intrinsics from configs/scene.yaml, poses from the station calibration)."""
+def camera_cfgs(meta: dict, scale: float = 1.0, data_types=("rgb",), update_pose: bool = False) -> dict[str, TiledCameraCfg]:
+    """The evaluator's four cameras (intrinsics from configs/scene.yaml, poses from the station calibration). Isaac
+    ignores the principal point (images centred on the optical axis): see tower_rl.perception.cameras."""
     sc = load_yaml("scene")["cameras"]
     mc = meta["cameras"]
     w, h = int(round(640 * scale)), int(round(480 * scale))
@@ -58,7 +59,8 @@ def camera_cfgs(meta: dict, scale: float = 1.0) -> dict[str, TiledCameraCfg]:
     def cam(prim_path, name, pos, rot):
         k = sc[name]["K"]
         kk = [k[0][0] * scale, 0.0, k[0][2] * scale, 0.0, k[1][1] * scale, k[1][2] * scale, 0.0, 0.0, 1.0]
-        return TiledCameraCfg(prim_path=prim_path, data_types=["rgb"], width=w, height=h,
+        return TiledCameraCfg(prim_path=prim_path, data_types=list(data_types), width=w, height=h,
+                              update_latest_camera_pose=update_pose,
                               offset=TiledCameraCfg.OffsetCfg(pos=tuple(pos), rot=tuple(rot), convention="opengl"),
                               spawn=sim_utils.PinholeCameraCfg.from_intrinsic_matrix(intrinsic_matrix=kk, width=w, height=h,
                                                                                       clipping_range=tuple(sc[name]["clip_m"])))
@@ -74,7 +76,8 @@ def camera_cfgs(meta: dict, scale: float = 1.0) -> dict[str, TiledCameraCfg]:
 
 
 def make_station_scene_cfg(variant: str, num_envs: int, cameras: bool = False, cam_scale: float = 1.0,
-                           env_spacing: float = 3.0, extras: dict | None = None) -> InteractiveSceneCfg:
+                           env_spacing: float = 3.0, extras: dict | None = None, cam_data_types=("rgb",),
+                           cam_update_pose: bool = False) -> InteractiveSceneCfg:
     meta = load_station_meta(STATION_JSON)
     phys = load_yaml("physics")
     layout = Layout.load(variant)
@@ -99,7 +102,7 @@ def make_station_scene_cfg(variant: str, num_envs: int, cameras: bool = False, c
                        collider=collider, dims=layout.dims.get(bid), mass=layout.mass.get(bid))
         for bid in block_order(layout)})
     if cameras:
-        attrs.update(camera_cfgs(meta, cam_scale))
+        attrs.update(camera_cfgs(meta, cam_scale, cam_data_types, cam_update_pose))
     attrs.update(extras or {})
     cls = configclass(type("StationSceneCfg", (InteractiveSceneCfg,), attrs))
     return cls(num_envs=num_envs, env_spacing=env_spacing, replicate_physics=True)

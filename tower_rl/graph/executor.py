@@ -1050,6 +1050,7 @@ class PushNode(NodeBase):
         self.retreat = None  # rows left of the planned retreat after the departure
         self.phase = 0       # planned push: 0 to the contact pose, 1 pushing
         self.handover, self.static_rows, self.prev_bp = False, 0, None  # learned -> planned hand-over (stalled block)
+        self.lost_rows, self.last_along = 0, 0.0  # rows the target has not been seen (perceived confidence < CONF_MIN)
         r.grip[self.arm].reset(width=self.pg["tool_width_m"], closed=True)
 
     def _moved(self, s: State) -> float:
@@ -1073,6 +1074,21 @@ class PushNode(NodeBase):
             return Status.TIMEOUT, []
         bp, bq = r.block(s, self.spec["block"])
         along, lat = push_geo.progress(bp, self.p0, self.dir)
+        if float(s.block_conf[s.block_ids.index(self.spec["block"])]) < CONF_MIN:
+            # the target is not seen this row (tipping over the tower edge, behind the pusher): hold still rather than
+            # act on a stale pose (the actor, seeing a block that stopped, pushed harder: perception closed loop, Task
+            # 4-3); lost for long after it was last seen well out along the push, it has left the tower
+            self.lost_rows += 1
+            if self.lost_rows > self.pg.get("lost_hold_rows", 15) and self.last_along >= self.pg.get("lost_departed_along_m", 0.06):
+                self.info = {"along_mm": round(self.last_along * 1000, 1), "why": "lost_departed", "steps": self.steps}
+                self.retreat = 5
+                return self.step(s)
+            if self.lost_rows <= self.pg.get("lost_hold_rows", 15):
+                r.command(arm, qm)
+                self.steps += 1
+                return None, [r.row()]
+        else:
+            self.lost_rows, self.last_along = 0, float(along[0])
         moved = self._moved(s)
         if moved > self.spec["structure_mm"] / 1000:
             self.info = {"why": "structure", "moved_mm": round(moved * 1000, 1), "along_mm": round(float(along[0]) * 1000, 1)}

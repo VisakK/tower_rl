@@ -95,9 +95,11 @@ def _validate(chunk) -> np.ndarray:
 
 def run_batch(world: StationWorld, policy: Policy, sampler: DomainSampler | None, seed: int, max_time_s: float = 210.0,
               op_cfg: OpCfg | None = None, episode: Episode | None = None, stage: int = 0, rate_hz: int = 10,
-              noise: NoiseCfg | None = None, log=print) -> list[EpisodeOutcome]:
+              noise: NoiseCfg | None = None, log=print, observe=None) -> list[EpisodeOutcome]:
     """One episode per env. ``episode`` replaces the domain sample by that recording's initial state and goals.
-    ``rate_hz`` is the track: 10 (rows held 0.1 s) or 30 (rows held 1/30 s)."""
+    ``rate_hz`` is the track: 10 (rows held 0.1 s) or 30 (rows held 1/30 s). ``observe(world, envs, states)``
+    replaces the requesting envs' states (e.g. block poses estimated from the rendered cameras, tower_rl.perception);
+    its ``reset(variant, seeds)`` runs with the policy's."""
     assert rate_hz in (10, 30)
     ticks_per_row = 30 // rate_hz
     n = world.n
@@ -125,6 +127,10 @@ def run_batch(world: StationWorld, policy: Policy, sampler: DomainSampler | None
     shadow_done = [False] * n
     seeds = [seed * 1000 + e for e in range(n)]
     policy.reset(n, world.variant, seeds)
+    if observe is not None:
+        observe.reset(world.variant, seeds)
+        if episode is None and hasattr(observe, "set_domain"):  # e.g. the case "lighting" on the rendered cameras
+            observe.set_domain(world, dom)
     queues = [deque() for _ in range(n)]
     noisers = [PerceptionNoise(noise, len(world.block_ids), seeds[e] + 7) for e in range(n)] if noise else None
     act_wall = []
@@ -153,6 +159,8 @@ def run_batch(world: StationWorld, policy: Policy, sampler: DomainSampler | None
         need = [e for e in range(n) if not done[e] and not queues[e]]
         if need:
             states = [world.state(e) for e in need]
+            if observe is not None:
+                states = observe(world, need, states)
             if noisers:
                 states = [noisers[e](st) for e, st in zip(need, states)]
             try:

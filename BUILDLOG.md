@@ -3,7 +3,7 @@
 Build instructions: `~/Documents/corl_challenge/TOWER_BUILD_INSTRUCTIONS.md` (the "build file"). One entry per session:
 what was built, acceptance numbers, deviations from the build file with reasons.
 
-## Status (updated 2026-10-20 03:10)
+## Status (updated 2026-10-21 08:40)
 
 | Step | State | Evidence |
 |---|---|---|
@@ -15,6 +15,7 @@ what was built, acceptance numbers, deviations from the build file with reasons.
 | 6 place_release | passed without obs noise (99-100 %); below 95 % D0 with the build file's noisy obs (deviation 13) | left 92.6 %, back 87.2 % D0 noisy |
 | 7 graph, executor, rehearsal, edit loop | **passed**: all 12 cells at N = 100 for both bundles | `teacher_v4` 1186 / 1200 (precise grasps), `teacher_v6` 1182 / 1200 (noise-tuned grasps, new executor); edits: 1 reverted, 2 and 3 kept |
 | 8 hardening | export, timing, both arms passed; **executor robust to perception noise** (realistic model TSR 0.29-0.88, was 0.00-0.75); build-file model (independent 3 mm per block) limited by perception (TSR 0.08-0.33); open: left place under shared errors, 30 Hz Task 1-3 | "Step 8.1 round 2" |
+| Pose estimator (session 4) | **closed loop on rendered cameras**: Tasks 1-3 48 / 48, Task 5-2 8 / 8, 5-3 7 / 8, Task 4-2 D0 4 / 4 / D1 1 / 4, 4-3 D0 2 / 4 / D1 0 / 4 (truth 4-3 D0 4 / 4); organizer frames (kp_v2) all blocks p90 0.70 mm, held p90 0.24 mm; open: Task 4 push actor vs perception | `tower_rl/perception/`, `results/perception/` (deploy kp_v2); "session 4" |
 | Tasks 4 / 5 (session 3) | **integrated**: graph families pushdown / insertion, executor nodes, PPO push (both arms) in the bundle; Task 5 runs planned grasp / insert / push-in (learned push_in left trained: worse on CPU) | rehearsal, CPU, `teacher_t45_final` (= v2 skills): 4-2 D0 / D1 0.97 / 0.88, 4-3 0.90 / 0.72 (40 each); 5-2 1.00 / 0.75, 5-3 1.00 / 0.58 (24 each; 5-3 D1 0.81 on two other seed sets) |
 
 Bundles: `results/bundles/teacher_t45_final` for Tasks 4 / 5 (teacher_v6 skills + learned pushes left v3 / back v1c; graphs and configs of 2026-10-20 03:52; see session 3). `teacher_v6` to run on estimated poses (graphs v5, noise-tuned grasps), `teacher_v4` for privileged use
@@ -940,3 +941,368 @@ Deviations:
   GPU env and diff the vectors / actions.
 - End of session 3 (05:00): GPU idle. Recommended for Tasks 4 / 5: `teacher_t45_final`, where Task 5 uses the planned
   grasp / insert / push-in.
+
+## 2026-10-20/21 (session 4): pose estimator v1
+
+Goal (user, 2026-10-20 evening): build the multi-view RGB pose estimator on the critical path (Teacher_build_session.MD
+section 11), "the pose estimator that gives the best estimates". Code: `tower_rl/perception/` (Isaac-free except where
+noted), scripts `render_perception_data.py`, `fetch_dataset_frames.py`, `train_perception.py`, `eval_perception.py`,
+`check_camera_model.py`, `rehearse.py --perception`.
+
+### Off-the-shelf models (decision)
+
+No off-the-shelf model fits: FoundationPose (the strongest zero-shot 6D pose model) needs depth, which the challenge does
+not provide; RGB-only novel-object models (MegaPose, GigaPose, FoundPose, Co-op) are single-view, centimetre-level on
+symmetric textureless objects, slow, and know nothing of identical stacked instances. We have what they lack: exact
+calibration, the exact block model and an unlimited, perfectly labelled renderer of the evaluator's scene. So: an
+off-the-shelf ImageNet backbone (torchvision ResNet-34) in a DOPE/PVNet-style keypoint network (block corners + block
+edges + visible-block mask, full resolution) trained on our renders, and a model-based multi-view fit (Gauss-Newton on
+corner and edge correspondences in all four cameras) with tracking priors from the executor's world model.
+
+### Image formation (measured; supersedes "a ~1 deg recalibration" of session 1)
+
+- The 12-17 px offset between our renders and the dataset JPEGs is exactly (cx - 320, cy - 240) on all four cameras
+  (sub-pixel registration: 11.9 / 3.0, 12.1 / 17.0, 4.5 / 6.6, 4.5 / 6.3 px; correlation 0.74-0.95): **Isaac Lab cameras
+  ignore the principal point** (aperture offsets unsupported: the optical axis goes through the image centre; fx / fy
+  averaged), the generator applies it (`opencv_pinhole_applied_explicitly`). The camera poses of the published station
+  equal the dataset's (Sep-9 Tasks 1-3 and Sep-14 Tasks 4/5 data alike): there was no recalibration.
+- Both renderers count the principal point from the pixel corner: in pixel-centre coordinates the evaluator's is
+  (cx - 0.5, cy - 0.5) and Isaac's (319.5, 239.5). With that, projected block edges of the recorded poses sit on the
+  dataset JPEGs' edges within 0.25 px on every camera (`results/perception/calib/model_check_t42_ep70/`; one 0.5 px case),
+  and on our renders within 0.25 px (FK wrist poses). Static images are delivered turned by 180 deg (docs: observation
+  arrays match the dataset JPEG orientation; wrist views as is).
+- Consequence: the organizers' 531 episodes are perfectly labelled evaluator-renderer images (recorded block poses + FK).
+  `data/perception/dataset_val/`: 3 episodes x 24 frames per variant (720 frames) for validation.
+- The rendered block is the station hull: 150 x 49.76 x 28.3 mm (+ two keel vertices within 1 mm of two corners), not
+  150 x 50 x 30; labels use these extents (Task 5 side blocks scaled by their dims).
+- Foundations are not fixed in the dataset: 2 mm spread across episodes, up to 3.8 mm from our layouts; the estimator
+  measures them (5 mm prior toward nominal on the first call only).
+- Lighting: one RectLight (900 x 600 mm, 3000, 5600 K); RTX ambient light (intensity 1.0) gives most of the base
+  illumination, so x0.25-x2 of the RectLight moves mean brightness 108-145 (x0 still 105); colour temperature shows
+  clearly. Renders after a light change need more than one 4-subframe capture to converge.
+
+### Training data
+
+`scripts/render_perception_data.py`: the teacher (`teacher_t45_final`, privileged, CPU physics) runs episodes with the
+four cameras on (RGB + depth, the generator's RTX settings, 4 subframes); random rows are captured (p 0.1 per 0.1 s
+row). Labels: block poses, camera models, per-corner visibility (Isaac depth), per-pixel block ids (analytic boxes
+where Isaac's depth agrees; 254 = a block hidden by an arm or finger). Light randomized per env and batch: 40 % nominal,
+else intensity x0.25-2.0 (log-uniform), 3000-8500 K, azimuth +-60 deg about the table centre, tilt <= 30 deg in half.
+Run r1: all ten variants, D0 + D1, 16 episodes per tier (seed 20000) + validation 4 per tier (seed 90000); ~240 KB per
+frame (4 JPEG q95 + 4 PNG); Task 2-3: 2766 frames in 13 min.
+
+### Fit (oracle heatmaps, before any network)
+
+With heatmaps splatted from the frames' own labels (`eval_perception.py --oracle`), Task 2-3 renders:
+- from a perturbed truth (4 mm / 3 deg yaw / 1 deg tilt): first version median 0.10 mm, p99 10.8 mm, 3 % of blocks > 5 mm
+  (wrong edge associations snowballing; 15 mm priors out of the windows); after coarse-to-fine association (6 -> 3 px),
+  Huber -> Tukey weights, visibility re-predicted during the fit and a re-search + refit of every block whose inlier
+  ratio (inliers / predicted visible points) is < 0.6: median 0.06 mm, p90 0.36 mm, p99 2.7 mm, 0.2 % > 5 mm (no
+  movable block); held blocks 0.01 mm;
+- first call from the nominal layout + coarse search: 0 of 360 blocks > 2 mm, p99 0.55 mm.
+The ratio separates good fits: all fits < 0.5 were wrong, half of 0.5-0.6, 1.5 % above 0.8.
+- Task 1-3 (two parallel blocks per layer), same tests: first call 0 of 480 blocks > 2 mm (p99 0.45 mm). Perturbed
+  truth 4 mm / 3 deg: 2.3 % > 5 mm: blocks slid ~10 mm along their length (long edges cannot see that) or truly
+  ambiguous (one 28 mm-off pose outscored the truth). A minimum-over-point-groups inlier ratio (corners, x / y / z
+  edges) was tried against the slide and reverted: worse on both variants (4.4 % / 1.7 % > 5 mm), because points hidden
+  by an arm (not in the visibility prediction) drag single groups down even at the true pose.
+- Realistic tracking priors (1.5 mm / 1 deg / 0.5 deg): no block > 5 mm; p99 0.97 mm (Task 1-3) / 0.94 mm (Task 2-3),
+  movable blocks p90 0.34 / 0.15 mm. The 4 mm prior test stays as a re-acquisition stress test.
+- Table search for lost movable blocks (Task 4 debris, knocked blocks): flat or on its side, any yaw, +-12 cm, away
+  from other blocks; oracle test: a top block 8.5 cm off its tower, turned 34 deg, found within 2 mm.
+
+### Estimator details added before the first network (2026-10-20 23:00-23:40)
+
+- A fourth network head, "hidden" (a block surface covered by an arm or finger: ids 254), keeps such points out of
+  the predicted visibility (arms are not modelled geometrically). Using the visible-block mask for this instead was
+  tried and dropped (stress test 5.2 % / 2.8 % > 5 mm): it also says "no block" on background, which excuses the points
+  of a misplaced pose.
+- Resting blocks: a fit within 1.5 mm / 0.75 deg of the previous estimate moves it by 0.3 of the difference (noise);
+  beyond, it is taken whole (moved). Held blocks: reported as the gripper's FK pose times a filtered offset (gain 0.15,
+  or 0.5 after a change > 1 mm / 0.5 deg: a slip); the hold ends when the fingers open past 65 mm or close past 46 mm
+  (dropped: the block is 49.7 mm wide).
+- Closed loop without rendering (`rehearse.py --perception oracle`: heatmaps splatted from the true visible corners
+  and edges, boxes only, estimator on CPU) checks the integration with the executor: Task 2-3 D0, 2 episodes: TSR 1.00,
+  PSR 1.00, ODR 0; estimation errors along the trajectories median 0.07 mm, p99 0.45 mm; ~180 calls per episode.
+
+### Night of 2026-10-21 (00:50-): r1 data done, oracle closed loop on D1, tooling
+
+- r1 training renders finished 00:54: 28,227 frames (4 views each) over all ten variants, D0 + D1, 16 episodes per tier
+  (Task 1-3 4252, 4-3 3790, 5-3 3966, 4-2 3202, 1-2 3299, 2-3 2766, 5-2 2520, 3-3 1756, 2-2 1456, 3-2 1220); 6.5 GB.
+  Validation renders (seed 90000, 4 per tier) follow, then labelling of the organizer frames, then kp_v1 training
+  (`results/perception/gpu_queue_train_v1.sh`), its evaluation (`gpu_queue_eval_v1.sh`) and the closed loop on
+  rendered cameras for every variant (`gpu_queue_closed_v1.sh`, 4 episodes per tier, CPU physics).
+- `train_perception.py` smoke-tested on CPU (6 iterations on the full r1 + organizer data): runs end to end.
+- `label_dataset_frames.py` (first run is in the queue) checks that the written state reaches the renderer: the share
+  of box pixels whose rendered depth lies beyond the box; it aborts (exit 2, no labels) if the first three frames are
+  all > 20 %, and reports the mean / max per variant.
+- Closed loop: `CameraPerception.save` writes every call's estimates, truth, widths, held flags, inlier ratios
+  (`perception_log.pkl` next to perception.json); the D1 case "lighting" now reaches the rendered station light
+  (`tower_rl/sim/lights.py`, `run_batch` calls `observe.set_domain(world, dom)`; before, rehearsals rendered nominal
+  light in every case).
+- Estimator: a lost movable block not found by the table search waits 2, 4, 8, 16 calls before the next search (Task
+  4 debris was searched every call: the CPU oracle run of 4-3 D1 took > 80 min for one batch).
+- Oracle closed loop, D1, 2 episodes each (`results/perception/closed_loop/oracle_d1/`): Task 3-3 TSR 1.00, errors p99
+  0.60 mm (held p99 0.72 mm). Task 1-3 TSR 0.50: seed 7000001 (uneven_weights) failed its first place (yaw 6.3 deg),
+  re-grasped 27 mm off-centre, failed again (9.2 mm) and the tower then fell (the same seeds pass on truth); confident
+  estimates > 5 mm in 12.5 % of the calls after the fall. Trace rerun with the per-call log in `oracle_d1_trace/`.
+- Task 1-3 D1 trace (`oracle_d1_trace/`, per-call log): perception matched the truth to < 0.3 mm / 0.4 deg through
+  both failed places of seed 7000001, and the same seeds on truth state (`truth_d1_same/`) fail identically (TSR
+  0.50, t0 place 6.3 deg off): a teacher failure under uneven weights, not perception. Two estimator faults showed:
+  (1) at 48.8 s the back arm's fingers knocked block l3_a (tilted 9 deg, 10 mm); the prior fit and the planar search
+  failed, the table search ran and its refit slid onto the destination foundation block 2 (a duplicate pose with the
+  other block's image features, inlier ratio 0.69, confidence 1), where it stayed while the block came to rest on the
+  foundation layer turned 55 deg; (2) a grasp was detected while the fingers were still closing (51.4 mm on the
+  49.8 mm block) and the block shifted ~8 mm in the pinch frame within a call; the filtered offset took ~10 calls.
+  Fixes: `_overlap` (a pose whose centre line or corners, pulled in 3 mm, lie inside another block shrunk by 3 mm, or
+  that contains another block's centre) rejects table-search results, re-search results and any fit that moved > 5 mm
+  into another block (the block is then lost); the lost-block search also tries lying flat on the top face of every
+  nearby block (layers), and its hypotheses must not interpenetrate (replaces the 45 mm centre-distance filter); the
+  first 3 held-block fits after a grasp are taken whole (`settle_calls`). Test: `test_knocked_block_found_on_a_layer_
+  not_on_another_block`. The old table test's block lay partly inside the foundation (the 45 mm filter let that pass).
+- Re-acquisition stress test on all ten variants (oracle maps incl. the arm-hidden map from the ids; priors 4 mm /
+  3 deg yaw / 1 deg tilt; 400 val frames, 4873 blocks; `results/perception/eval/oracle/stress_r1val_*.json`): baseline
+  foundations 1.80 % / movables 1.59 % > 5 mm (p99 7.4 / 6.2 mm). Most foundation failures sank or tilted (z errors up
+  to 11 mm under the towers that hide them); most movable ones slid along their length (corners lost, long edges kept).
+  (1) Foundations lie flat on the table: their fit pins z (nominal), roll and pitch (prior weight x1e4; `_flat`): 0.29 %.
+  (2) A fit that matches < 75 % of its >= 3 predicted visible corners is searched again (planar), the re-search
+  accepted on inlier ratio + 0.5 corner ratio (0.5 caught half of the slides: 1.30 %; 0.75: 0.65 %). (3) The rule "a
+  fit that moved into another block is rejected" now spares a fit whose inlier ratio beats the other block's by
+  >= 0.15 (in the stress test the neighbour's perturbed prior was the wrong one): foundations 0.17 % / movables
+  0.57 % > 5 mm (p99 1.2 / 3.4 mm). Realistic tracking priors (1.5 mm / 1 deg / 0.5 deg): 0 of 4860 > 5 mm, p99
+  1.06 mm; first call: 0 of 880 > 5 mm, p99 0.66 mm. CPU call 0.19 s tracking / 0.33 s stress / 0.47 s first call.
+- **Organizer data quirk: recorded foundation poses are not where the renderer drew the foundations.** First read of
+  kp_v1 (checkpoint 7500, CPU, 120 organizer val frames, tracking priors): movable blocks median 0.22 / p90 0.79 /
+  p99 1.55 mm, held p90 0.41 mm, but foundations 1-4 mm off, the three blocks of a pad off together, z exact. A
+  network-free check (edge registration of projected recorded poses on the static JPEGs) agrees: movable blocks
+  register within 0.1 px (never > 1 px), recorded foundations are off by > 1 px in 41 % of the views (up to 2.7 px).
+  Per pad and episode the drawn foundations sit at a rigid offset from the recorded ones (median 1.0-1.2 mm, p90
+  3.9-4.8 mm, max 6.9 mm; no yaw), neither at the recorded nor at the nominal layout position. The episodes' goals
+  (`target_mapping`) are built on the same jittered tower centres as the recorded foundations (`tower_jitter_m`
+  0.003). The docs fix foundations and destination anchors in the evaluation, so drawn and recorded should agree
+  there; our executor takes goals from the perceived (drawn) foundations either way. Consequences here: the organizer
+  frames' foundation labels (training) and truth (evaluation) were wrong by up to ~7 mm.
+  `scripts/correct_dataset_foundations.py` registers each pad per episode (coarse-to-fine translation search on the
+  image gradient along the pad's visible edges, both static cameras, 4 frames; idempotent; keeps `pos_recorded`) and
+  rewrites the records; `eval_perception_sequence.py --foundation_corrections` applies them to the HDF5 truth.
+  kp_v1 trained on the uncorrected labels; the kp_v1 evaluation queue (`gpu_queue_eval_v1b.sh`) uses the corrected
+  truth. Also fixed: `eval_perception.py` assumed records list blocks in the estimator's order (Task 5 records list the
+  destination blocks first: the dataset evaluations would have stopped at the first Task 5 frame).
+- More organizer training frames: subset episodes 8-9 of every variant (40 frames each) into `dataset_train`.
+- Estimator: lost blocks back off up to 64 calls between searches; after 3 failed searches a block is a "ghost"
+  (confidence 0; it hides nothing and blocks no other pose until found again; Task 4 debris).
+
+### kp_v1: trained network results (2026-10-21 03:30-)
+
+- Training (`results/perception/models/kp_v1/`): 25k iterations x 12 crops (512 x 384), ~100 min on the A5000 (4.3
+  it/s); r1 renders + organizer frames x3. Held-out renders at 25k: corners recall 98.4 % / precision 97.4 % within
+  3 px, matched error median 0.20 / p90 0.67 px; edges recall 99.4 % / precision 98.9 %; block mask IoU 0.995;
+  arm-hidden IoU 0.93 (plateau from 20k). The process hung after TRAIN_DONE (persistent loader workers): killed;
+  `train_perception.py` now ends with `os._exit(0)`.
+- Single frames (`results/perception/eval/kp_v1/`; organizer truth with corrected foundations):
+
+  | set | mode | all blocks p50 / p90 / p99 mm | > 5 mm | movable p90 / p99 mm | held p90 mm | call s |
+  |---|---|---|---|---|---|---|
+  | renders | tracking prior | 0.13 / 0.63 / 1.29 | 0.06 % | 0.72 / 1.62 | 0.42 | 0.27 |
+  | renders | first call | 0.14 / 0.39 / 0.84 | 0 | 0.51 / 0.96 | - | 0.35 |
+  | renders | stress 4 mm / 3 deg | 0.12 / 0.42 / 2.09 | 0.39 % | 0.58 / 3.08 | - | 0.36 |
+  | organizer | tracking prior | 0.31 / 1.15 / 4.05 | 0.37 % | 0.69 / 1.61 | 0.25 | 0.10 |
+  | organizer | first call | 0.29 / 0.78 / 4.07 | 0 | 0.39 / 0.59 | - | 0.13 |
+  | organizer | stress | 0.29 / 1.32 / 4.39 | 0.60 % | 0.67 / 2.99 | 0.14 | 0.28 |
+
+  The network adds little to the fit's own error (oracle maps: tracking p99 1.06 mm). On the organizer renderer
+  movable and held blocks are as accurate as on ours; the remaining large errors are foundations (destination pads
+  under towers: Task 3-2, 5-2, 5-3).
+- Whole organizer episodes at 10 Hz (10 held-out episodes, `sequences.json`): calls 0.09-0.17 s mean (GPU), held
+  blocks p90 0.10-0.24 mm, placed blocks 0.02-0.28 mm from the truth one second after release; but relative to the
+  destination foundation 0.1-0.8 mm (Tasks 1-3, 2-x) and ~2 mm (Task 3-x), 3.2-3.6 mm (Task 5-3, where the slot comes
+  from the side blocks instead): the destination foundation estimate drifts once blocks stand on it. Static p99
+  3-6 mm in Task 3 (foundations).
+- Foundations are now frozen after 10 ok fits (mean x, y, yaw; `freeze_after`): no longer fitted, still occluders.
+  Oracle closed loop Task 2-3 D0 with it: TSR 1.00, errors p99 0.27 mm (was 0.45).
+- Closed loop with the network on rendered cameras (`gpu_queue_closed_v1.sh`, `results/perception/closed_loop/kp_v1/`,
+  4 episodes per tier, CPU physics, renders + network + estimator on the GPU): Task 2-3 D0 TSR 1.00 (4/4), PSR 1.00,
+  ODR 0, errors along the trajectories median 0.07 / p90 0.30 / p99 1.5 mm; D1 TSR 1.00 (4/4), p99 0.98 mm.
+- Closed loop, network, continued: Task 1-3 D0 / D1 TSR 1.00 / 1.00 (4/4 each), errors p99 0.73 / 1.16 mm, held p90
+  0.17 mm; Task 3-3 D0 / D1 1.00 / 1.00 (4/4 each). Target block of each skill p90 0.16-0.32 mm.
+- Foundation drift confirmed (per-call trace through organizer episodes, `eval_perception_sequence.py --trace`): Task
+  3-3's destination pad centre is off 0.4-0.6 mm while the pad is empty, ~2 mm from the first block on it (its middle
+  block 5.2 mm median); Task 1-2 0.1-0.4 mm empty, 1-2 mm later. Hence the freeze after 10 ok fits.
+- Task 4 (oracle closed loop, D1 4-3, `oracle_d1_fix1` / `fix2`): the pushed block moved 31 mm in one 0.1 s call
+  (the push actor strikes first), then 125 mm within 0.4 s; the estimate stayed on the tower (fit along its long edges,
+  ratio 0.64; then lost and searched only within 12 cm, the debris lands 160-175 mm out), so the push node never saw
+  the departure and pushed on into the tower ("structure" failures from the first push; truth reaches p2-p7).
+  Fixes: the planar re-search adds hypotheses along the block's own long axis up to +-100 mm (and drops hypotheses
+  inside other blocks); a block that moved > 3 mm last call is predicted to move as much again (<= 40 mm; no static
+  low-pass while moving); the lost-block search spans +-16 cm on 5 x 5 max-pooled heatmaps (8 mm steps) and tries
+  leaning poses (low end on the table, tilt 25-82 deg about the short axis, yaw over the full turn): a pushed-off
+  block that came to rest leaning against the tower (60 deg) was otherwise never found (its stale pose kept the push
+  going: timeouts). Pushes are now tracked through the slide (errors 0.0-0.5 mm at 9-43 mm per call, `fix2`); the
+  lean search is new in `fix3`. Tests: `test_pushed_block_followed_along_its_length`,
+  `test_block_leaning_against_the_tower_found` (fails without the lean search).
+- Freeze verified on the organizer Task 3-3 episode (CPU replay, kp_v1): static p99 5.58 -> 0.84 mm, > 5 mm 8.5 % ->
+  0.01 %; placed blocks relative to the destination foundation 2.21 / 1.90 / 1.79 -> 0.63 / 0.54 / 0.41 mm.
+- Closed loop, network: Task 5-3 D0 TSR 0.75 (3/4, all G and P ok), D1 0.75 (3/4; truth on 2 of these seeds 0.50).
+  Insert target p90 0.085 mm, held p90 0.12 mm; but every i1 push-in ended "failed" (twice "structure 11.6 / 12.5 mm"):
+  while the insert slid in next to it (1 mm clearance), the side block's estimate crept 1.5 -> 12.8 mm (it never
+  moved: its fit took the insert's parallel edges, each call's step inside the static gate), and the executor's
+  structure check saw it move. Fix: a free block unmoved for 10 calls (< 0.5 mm / 0.3 deg per call) is anchored, its
+  fit held toward the anchor with sigma 0.5 mm (`rest_calls`, `rest_prior_m`); a real move fails the fit or the corner
+  test and the re-search (weak prior) moves it, which ends the anchor.
+- Task 4 oracle `fix3` (lean search): pushed blocks found leaning (0.0-1.0 mm), but an identity swap appeared: a
+  still top-layer block whose fit failed for a call (pusher in front) was searched wide and taken onto the leaning
+  pushed block's features (ratio 1.00: identical blocks), and the pushed block then onto its vacated place. Fix: a
+  block lost while still is taken as occluded (pose kept) for 10 calls before the wide search; blocks lost while
+  moving are searched at once (`occluded_calls`). Test: `test_still_block_out_of_view_keeps_its_pose`; the table,
+  layer and lean tests now give their block its last motion (falling, knocked, pushed).
+- Anchoring verified (oracle closed loop, D0, 2 episodes each, `oracle_anchor/`): Task 5-3 TSR 1.00 with every
+  push-in ok (push-in target p90 1.3 mm, was 20.4 mm with the network before the anchor), insert target p90 0.04 mm;
+  Task 2-3 TSR 1.00, p99 0.32 mm.
+- Closed loop, network, Task 4-3 D0 (code with the lean search, occlusion delay): TSR 0.00 (0/4), pushes 50 %;
+  the same seeds on truth: TSR 1.00 (4/4, all 9 pushes). Two traces: (a) seed 7100001: a layer-1 block deep in the
+  tower (never touched) failed its fits while hidden for > 10 calls, was searched wide and teleported, and a pushed
+  block took its place (identity swap); (b) seed 7000000: every estimate within 0.5 mm at the start of push p3 (debris
+  on the table found correctly), the pushed block tracked to 0.1 mm over 149 mm, yet the push dragged both layer-2
+  neighbours 9-10 mm ("structure"), which truth does not. Open; an oracle run on the same seeds separates estimator
+  logic from network errors (`oracle_d0_fix5`).
+- Fixes: (1) a still block is searched wide only if it was touched, i.e. a gripper's pinch came within 6 cm of it or
+  a moving block's centre within 10 cm, during the last 20 calls (`touch_m`, `touch_block_m`, `touch_calls`; replaces
+  the 10-call occlusion delay): blocks do not teleport. (2) 57 % of the reported quaternions were half-turned twins of
+  the simulator's (the same box; searches and the foundation freeze pick any of the four), while the learned skills
+  observe raw quaternions trained on the simulator's continuous ones: each call now reports the representative
+  nearest its previous output.
+- Quaternion twins traced in the Task 4-3 D0 network run: foundations turned at their freeze (the doubled-angle mean
+  of a -90 deg yaw came back +90 deg) and stayed so; a pushed block re-found by the search at yaw 177 deg instead of
+  -3 deg mid-push, so the push actor's observed yaw change jumped by 180 deg. The continuity step (above) covers
+  both; test `test_quaternions_stay_continuous_through_the_foundation_freeze` (180 deg without it).
+- Queue after the kp_v1 closed loop (`gpu_queue_v2c.sh`): Tasks 4-3 / 5-3 again with kp_v1 and the later estimator
+  fixes (`closed_loop/kp_v1b/`), then relabelling of the corrected organizer frames, kp_v2 (fine-tuned from kp_v1,
+  12k iterations) and its evaluation.
+- Task 4-3 D0 oracle closed loop with the touch rule and quaternion continuity (`oracle_d0_fix5`, same seeds as the
+  truth 4/4): TSR 0.25 (1/4), GSR 0.86 (was 0.50 with the network and the older code), PSR 0.83, ODR 0.11. The
+  estimates are good while tracked (median 0.08 mm); failures: two "structure" pushes (12.7 / 13.2 mm, real
+  neighbour drags), a collapse with p8 timeouts, and one pushed block that flew off the table (z -18 m in the
+  truth; this is the 5e7 mm p99) after being lost for two calls while tipping over the tower edge: its frozen pose
+  told the push actor the block had stopped. The learned push actor reacts to perception artifacts that truth never
+  shows. Change: a moving block not found keeps its motion for up to 5 calls (decaying x0.8, `coast_calls`) instead of
+  freezing. The push actor's sensitivity to perceived poses remains the open Task 4 issue (candidates: train the push
+  skill with perception noise and short dropouts, as Step 8.1 did for grasp/place; or have the executor hold the
+  push while its target's confidence is low).
+- Executor focus: `PoseEstimator.__call__(..., focus=[block indices])` names the blocks the policy's current node acts
+  on; they are never anchored and are searched wide when lost (`CameraPerception` passes the current node's block; a
+  policy server passes the executor's). Reason: the anchored target of a push lagged its first 1-3 mm of motion (the
+  long edges still matched, corners within the 2 px inlier window), and the push actor, seeing a block that did not
+  move, pushed harder. Task 5's side blocks stay anchored while the insert (the focus) moves.
+- Truth reference in the loop: `rehearse.py --perception truth` passes the states through unchanged and logs them like
+  the estimator runs (Task 4-3 D0, same seeds: 4/4, as plain truth). Aligned call by call with the oracle run,
+  the physical trajectories part in the very first push (p0, t 5.8-6.4 s), exactly while the pushed block tips over
+  the tower edge and the estimator loses it for 1-3 calls (a block rotating about an edge leaves the fit's basin):
+  the actor then acts on a stale or coasted pose, the push and everything after it differ, and later pushes meet
+  other debris. Executor change (`PushNode.step`): while the push target's confidence is below CONF_MIN, hold the
+  pusher (no actor step) for up to `lost_hold_rows` (15) rows; lost longer after it was last seen >= 60 mm along the
+  push, it has left the tower ("lost_departed", retreat). On truth (confidence 1) nothing changes (verified 4/4).
+
+- kp_v1 closed loop, all variants (`results/perception/closed_loop/kp_v1/`, network on the four rendered cameras, 4 episodes
+  per tier, seeds 7000; the estimator changed during the queue: Tasks 2-3 / 1-3 / 3-3 / 5-3 / 4-3 ran before the freeze /
+  anchor / touch / continuity / focus / push-hold changes, the 2-layer variants with most of them):
+
+  | variant / tier | TSR | PSR | ODR | all blocks mm (median / p90 / p99) | held p90 mm | target block p90 mm by skill | calls |
+  |---|---|---|---|---|---|---|---|
+  | task1-2_tower_transfer_2 D0_perception | 1.00 (4/4) | 1.00 | 0.000 | 0.16 / 0.34 / 0.54 | 0.19 | grasp_lift 0.29, place_release 0.21, transit 0.29 | 942 |
+  | task1-2_tower_transfer_2 D1_perception | 1.00 (4/4) | 1.00 | 0.000 | 0.17 / 0.33 / 0.66 | 0.19 | grasp_lift 0.32, place_release 0.21, transit 0.30 | 940 |
+  | task1-3_tower_transfer_3 D0_perception | 1.00 (4/4) | 1.00 | 0.000 | 0.19 / 0.37 / 0.73 | 0.17 | grasp_lift 0.18, place_release 0.17, transit 0.16 | 1446 |
+  | task1-3_tower_transfer_3 D1_perception | 1.00 (4/4) | 1.00 | 0.000 | 0.20 / 0.44 / 1.16 | 0.17 | grasp_lift 0.20, place_release 0.23, transit 0.19 | 1455 |
+  | task2-2_cross_tower_transfer_2 D0_perception | 1.00 (4/4) | 1.00 | 0.000 | 0.08 / 0.36 / 0.70 | 0.15 | grasp_lift 0.28, place_release 0.40, transit 0.24 | 484 |
+  | task2-2_cross_tower_transfer_2 D1_perception | 1.00 (4/4) | 1.00 | 0.000 | 0.09 / 0.35 / 0.41 | 0.18 | grasp_lift 0.22, place_release 0.44, transit 0.21 | 484 |
+  | task2-3_cross_tower_transfer_3 D0_perception | 1.00 (4/4) | 1.00 | 0.000 | 0.07 / 0.30 / 1.50 | 0.16 | grasp_lift 0.17, place_release 0.32, transit 0.17 | 712 |
+  | task2-3_cross_tower_transfer_3 D1_perception | 1.00 (4/4) | 1.00 | 0.000 | 0.09 / 0.32 / 0.97 | 0.17 | grasp_lift 0.18, place_release 0.26, transit 0.20 | 767 |
+  | task3-2_vertical_stacking_2 D0_perception | 1.00 (4/4) | 1.00 | 0.000 | 0.07 / 0.21 / 0.97 | 0.16 | grasp_lift 0.39, place_release 0.25, transit 0.35 | 465 |
+  | task3-2_vertical_stacking_2 D1_perception | 1.00 (4/4) | 1.00 | 0.000 | 0.08 / 0.26 / 0.50 | 0.17 | grasp_lift 0.32, place_release 0.26, transit 0.31 | 463 |
+  | task3-3_vertical_stacking_3 D0_perception | 1.00 (4/4) | 1.00 | 0.000 | 0.07 / 0.37 / 1.00 | 0.17 | grasp_lift 0.19, place_release 0.26, transit 0.23 | 691 |
+  | task3-3_vertical_stacking_3 D1_perception | 1.00 (4/4) | 1.00 | 0.000 | 0.08 / 0.36 / 0.87 | 0.18 | grasp_lift 0.21, place_release 0.28, transit 0.22 | 693 |
+  | task4-2_full_tower_pushdown_2 D0_perception | 0.75 (3/4) | 0.75 | 0.102 | 0.12 / 0.36 / 150668809.45 | - | push 0.56, transit 0.48 | 2358 |
+  | task4-2_full_tower_pushdown_2 D1_perception | 0.50 (2/4) | 0.92 | 0.040 | 0.09 / 0.36 / 198.69 | - | push 15.97, transit 0.45 | 3990 |
+  | task4-3_full_tower_pushdown_3 D0_perception | 0.00 (0/4) | 0.47 | 0.500 | 0.10 / 0.37 / 359.66 | 0.26 | push 221.94, transit 474.90 | 5543 |
+  | task4-3_full_tower_pushdown_3 D1_perception | 0.00 (0/4) | 0.64 | 0.434 | 0.13 / 15.67 / 190.74 | 0.44 | push 130.47, transit 19.95 | 6460 |
+  | task5-2_tower_insertion_2 D0_perception | 1.00 (4/4) | 1.00 | 0.000 | 0.11 / 0.23 / 6.43 | 0.11 | grasp_lift 0.12, insert 0.09, push_in 31.58, transit 0.19 | 895 |
+  | task5-2_tower_insertion_2 D1_perception | 1.00 (4/4) | 1.00 | 0.000 | 0.10 / 0.24 / 14.32 | 0.10 | grasp_lift 0.14, insert 0.08, push_in 16.44, transit 0.13 | 939 |
+  | task5-3_tower_insertion_3 D0_perception | 0.75 (3/4) | 1.00 | 0.000 | 0.18 / 0.90 / 2.79 | 0.12 | grasp_lift 0.22, insert 0.09, push_in 20.41, transit 0.26 | 3015 |
+  | task5-3_tower_insertion_3 D1_perception | 0.75 (3/4) | 0.75 | 0.529 | 0.17 / 0.40 / 2.36 | 0.13 | grasp_lift 0.19, insert 0.08, push_in 15.13, transit 0.20 | 3016 |
+
+  Tasks 1-3 (2 and 3 layers): 48 / 48 episodes; Task 5-2 8 / 8, 5-3 6 / 8; Task 4-2 5 / 8, 4-3 0 / 8 (truth on the same
+  4-3 D0 seeds 4 / 4). The p99 outliers of Task 4 are pushed-off blocks that left the table (truth z far below 0).
+- With the push hold (Task 4-3 D0, first batch of 2 episodes): oracle maps TSR 1.00 (2/2), GSR 1.00, ODR 0 (was 1/2,
+  GSR 0.67-1.00 without it); network on rendered cameras (`kp_v1b`, all estimator fixes + hold) TSR 0.50, GSR 0.83,
+  ODR 0.08 (kp_v1 before the fixes: 0/2, GSR 0.56).
+- Push hold, results Task 4-3 D0 (4 episodes): oracle maps TSR 0.75 (3/4), GSR 1.00 (36/36 pushes), ODR 0.01; network
+  (`kp_v1b`) TSR 0.50 (2/4), GSR 0.83, ODR 0.08. Both network failures at p5 (the last layer-2 block): trace 7100001:
+  tracked to 0.1 mm while pushed, lost 6 calls while tipping (the pusher held still), found on its side on the table
+  at 0.1 mm, but 153 mm from the tower axis (< 160 mm: not departed), so the actor resumed and pushed into layer 1
+  ("structure"); on truth the actor follows through while the block tips and it lands beyond the line. Change: while
+  the target is unseen the pusher continues the actor's last commanded motion, decaying x0.8 per row (instead of
+  holding still). Oracle check `oracle_d0_fix9`.
+- `kp_v1b` (kp_v1, all estimator fixes, push hold): Task 4-3 D0 TSR 0.50 (2/4), GSR 0.83; D1 0.00 (0/4), GSR
+  0.72-0.78 (truth on two of these D1 seeds: 0/2); Task 5-3 D0 1.00 (4/4; was 0.75 with kp_v1 before anchoring and
+  focus).
+- Follow-through rejected: oracle Task 4-3 D0 (4 episodes, same seeds) with the pusher continuing its last motion while
+  the target is unseen: TSR 0.25 (1/4), GSR 30/36 (`oracle_d0_fix9`), against holding still: 0.75 (3/4), GSR 36/36
+  (`oracle_d0_fix8`). Reverted to the hold. Task 5-3 with anchoring + focus (`kp_v1b`, network): D0 1.00 (4/4), D1
+  0.75 (3/4) (kp_v1 before: 0.75 / 0.75; truth on two of the D1 seeds 0.50).
+
+### kp_v2 (2026-10-21 09:45-)
+
+Fine-tuned from kp_v1 (12k iterations, lr 5e-4) on the relabelled organizer frames (foundation poses corrected per
+episode; 70 training episodes = 2800 frames x3) + r1. Held-out renders unchanged (corners recall ~98.4 %). Organizer
+validation frames (corrected truth):
+
+| set | kp_v1 all p50 / p90 / p99 mm | kp_v2 | kp_v1 foundations p50 / p90 / p99 | kp_v2 | movables p90 v1 / v2 |
+|---|---|---|---|---|---|
+| tracking prior | 0.31 / 1.15 / 4.05 (> 5 mm 0.37 %) | 0.20 / 0.70 / 1.72 (0.07 %) | 0.48 / 1.78 / 4.41 | 0.21 / 0.74 / 1.75 | 0.69 / 0.67 |
+| first call | 0.29 / 0.78 / 4.07 | 0.18 / 0.41 / 0.91 | | | 0.39 / 0.36 |
+| stress 4 mm / 3 deg | 0.29 / 1.32 / 4.39 | 0.19 / 0.63 / 2.89 | | | 0.67 / 0.71 |
+
+The corrected labels removed most of the foundation error on the evaluator's renderer; movable blocks are unchanged.
+**kp_v2 is the model to deploy** (`results/perception/models/kp_v2/model_last.pt`). Last queue (`gpu_queue_v3.sh`):
+Task 4-2 closed loop with kp_v2 and the final estimator + executor (`closed_loop/kp_v2/`).
+- Whole organizer episodes at 10 Hz (10 held-out episodes, kp_v2 + final estimator incl. the foundation freeze,
+  `results/perception/eval/kp_v2/sequences.json`; kp_v1 with the estimator of 03:40 in brackets): placed blocks
+  relative to the destination foundation 0.09-0.55 mm (0.1-3.6 mm); static p99 0.39-1.02 mm on Tasks 1-4 (0.86-6.3);
+  Task 5 still has a tail (5-2: 1.2 % of static estimates > 5 mm, p99 11.4 mm; 5-3: 0.8 %, p99 3.0 mm), open; held
+  p90 0.10-0.23 mm; 0.085-0.13 s per call.
+- Task 5-2 tail traced (CPU replay, kp_v2): the only block > 5 mm is the insert during the demo's push-in (t 51-59 s,
+  under the roof, mostly hidden: up to 17 mm along its length). The sequence replay has no executor focus; in the
+  closed loop the push-in succeeds (Task 5-2 8/8, 5-3 7/8). Open, minor.
+- Task 4-2 with kp_v2 and the final estimator + executor (`closed_loop/kp_v2/`): D0 TSR 1.00 (4/4, all pushes).
+- Task 4-2 with kp_v2 and the final code: D0 1.00 (4/4); D1 0.25 (1/4; pushes 92-96 %, truth ~0.88 on 40 episodes).
+  The D1 failures follow "lost_departed" ends (target unseen 15 rows after >= 60 mm along: sometimes still on the
+  tower edge) and then "structure" failures; one is the lighting case.
+
+### Session 4 end state (2026-10-21 11:30)
+
+- Deploy `results/perception/models/kp_v2/model_last.pt` with `PoseEstimator(..., source="evaluator")`; per episode
+  `reset(variant)`, per call `est(images, q, widths, focus=[executor node's target block index])` (README).
+- Closed loop with the network on rendered cameras (4 episodes per tier): Tasks 1-3 (2 and 3 layers) 48 / 48 (kp_v1);
+  Task 5-2 8 / 8 (kp_v1), 5-3 7 / 8 (kp_v1 + fixes); Task 4-2 D0 4 / 4, D1 1 / 4 (kp_v2 + fixes); Task 4-3 D0 2 / 4,
+  D1 0 / 4 (kp_v1 + fixes; truth D0 4 / 4, D1 0 / 2 on these seeds).
+- Organizer (evaluator renderer) accuracy, kp_v2: tracking all blocks p90 0.70 / p99 1.72 mm, movable p90 0.67 mm,
+  held p90 0.24 mm; first call p99 0.91 mm; whole episodes: placements relative to the destination 0.09-0.55 mm.
+- Open: (1) Task 4: the learned push actor and perception (target lost while tipping over the tower edge; the
+  executor holds the pusher, then "lost_departed" may fire early; lighting case). Most promising: fine-tune the push
+  skill with perception-like dropouts and stale poses, as Step 8.1 did for grasp / place, or improve tracking through
+  the tip-over (rotation about the edge). (2) Task 5 push-in: the insert deep under the roof is tracked to 1-17 mm
+  (closed loop succeeds). (3) The policy server (`tower-infer-v1`) wiring the estimator, the executor and the bundle.
+
+### Write-up and videos (2026-10-21 afternoon)
+
+- `~/Documents/corl_challenge/Pose-estimator-v1.MD`: the session's narrative and reference (build, closed loop, results,
+  commands per task).
+- `rehearse.py --perception <model.pt> --video <dir>` (`tower_rl/perception/video.py`, hooked into `CameraPerception`):
+  one mp4 per episode (`<variant>_<tier>_seed<seed>_<success|fail>.mp4`), a frame per estimator call: the four
+  delivered images with every block's estimated box (visible edges, ray cast against the estimates; colour = state:
+  tracked, foundation, held, node target, weak, not seen, ghost), the true box (white) of blocks > 2 mm off, and a
+  status bar (node, target error and confidence, counts, held blocks). `--video_maps` adds the edge map and corner
+  peaks; `--live` renders the stage after every row (without `--headless`: the Isaac Sim window, play_episode.py's view).
+  Drawing costs ~0.02 s per frame (0.1 s with maps).
+- Checks (kp_v2, final code, one episode each): Task 2-2 D0 TSR 1.00, 121 calls, errors p99 0.28 mm, 51 s; Task 3-2 D1
+  (`--live` headless, `--video_maps`) TSR 1.00, 117 calls, p99 0.43 mm, 72 s. Test
+  `test_video_frame_draws_the_estimates_and_the_truth_where_off`; full suite passes.

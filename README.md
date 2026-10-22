@@ -226,6 +226,67 @@ Rehearsals of Tasks 4 / 5 report a second success rate, "TSR collapse-only": our
 the remaining tower is > 10 mm from its episode-start pose, while the generator's records only show its collapse rule
 (30 deg tilt / 15 mm drop); which one the leaderboard uses is not published.
 
+## Pose estimator (images -> block poses)
+
+The challenge observes only four RGB images, joint angles and gripper widths; `tower_rl/perception/` turns them into the
+executor's `State` block poses (BUILDLOG "session 4"). A keypoint network (`model.py`: ImageNet ResNet-34 U-Net,
+full-resolution logits for block corners, block edges, the visible-block mask and block surfaces hidden by an arm or
+finger) runs on each image; `estimator.py`
+fits every block's 6-DoF pose to the corner peaks and to the edge maxima along the normals of its projected visible
+edges in all four cameras (robust Gauss-Newton, coarse to fine), starting from its previous estimate, the gripper's FK
+pose times the measured offset for a held block, or, at the first call, the variant's nominal layout and a coarse
+search. Blocks whose fit fails, or that match fewer than 75 % of their predicted visible corners (a block slid along
+its length keeps its long edges), are searched again around their prior and along their long axis (a push moves a
+block up to ~40 mm per 0.1 s call; a block that moved is also predicted to keep moving); lost blocks are then looked
+for lying on the table, on their side, flat on top of other blocks or leaning against the tower (knocked or pushed
+off), with back-off while not found; after 3 failed searches a block is a "ghost" (confidence 0, hides nothing).
+Foundations are fitted flat on the table (x, y, yaw) and frozen after 10 good fits (blocks stacked on a pad hide it);
+no estimate may sit inside another block (a lost block's refit could otherwise take a neighbour's image features).
+
+Use (one estimator per episode stream; GPU):
+
+```python
+from tower_rl.perception.estimator import PoseEstimator
+est = PoseEstimator("results/perception/models/kp_v2/model_last.pt", device="cuda", source="evaluator")
+est.reset(variant)                      # at every episode start (block set, layout, nominal poses)
+pos, quat, conf = est(images, q, widths)  # images: {camera id: uint8 [480, 640, 3] RGB as delivered}, q [2, 7] rad,
+                                        # widths [2] m; -> [B, 3] m, [B, 4] wxyz, [B] in est.block_ids order
+```
+
+Confidence 1: a good fit; 0.6: accepted with fewer inliers; 0.3: not found this call (previous pose kept); 0: lost
+for several searches (pose unknown). Held blocks are reported as the gripper's FK pose times their measured offset.
+Calls take ~0.1 s on the A5000 (network ~40 %); the first call of an episode searches every block (~0.35 s).
+
+Camera model (`cameras.py`; verified to 0.25 px on the organizers' JPEGs): pinhole with the recorded K, principal point
+(cx - 0.5, cy - 0.5) in pixel-centre coordinates, the published station's camera poses, wrist cameras from FK of the
+measured joints; static images delivered turned by 180 deg. Isaac Lab renders ignore the principal point
+(`source="render"`: optical axis at the image centre), the evaluator's images do not (`source="evaluator"`).
+
+```bash
+# training data: the teacher runs episodes, the four cameras are captured at random rows (one variant per process)
+python scripts/render_perception_data.py --headless --device cpu --variant task2-3_cross_tower_transfer_3 \
+    --tiers D0 D1 --episodes 16 --num_envs 4 --seed 20000 --out data/perception/r1
+# organizer frames (evaluator renderer): fetch by range requests, then occlusion-aware labels from Isaac depth (GPU)
+python scripts/fetch_dataset_frames.py --variant <v> --skip 3 --episodes 5 --frames 40 --out data/perception/dataset_train
+python scripts/label_dataset_frames.py --headless --variant <v> --root data/perception/dataset_train
+python scripts/train_perception.py --train data/perception/r1 data/perception/dataset_train:3 \
+    --val data/perception/r1_val --iters 25000 --out results/perception/models/<name>
+# accuracy: single frames from a perturbed truth or the first call; whole organizer episodes at 10 Hz; in the loop
+python scripts/eval_perception.py --data data/perception/r1_val --checkpoint <model.pt> --mode prior --frames 400 \
+    --out results/perception/eval/<name>.json [--oracle] [--viz 8]
+python scripts/eval_perception_sequence.py --hdf5 data/episodes_full/data/<variant>/<episode>.hdf5 \
+    --checkpoint <model.pt> --out results/perception/eval/seq_<name>.json
+python scripts/rehearse.py --headless --device cpu --variant <v> --tiers D0 D1 --episodes 8 \
+    --bundle results/bundles/teacher_t45_final --perception <model.pt>   # or "oracle": splatted true heatmaps, CPU
+# (writes perception.json and the per-call log perception_log.pkl; the D1 case "lighting" changes the rendered light)
+# watch it: one mp4 per episode, a frame per estimator call (the four cameras with every estimated block coloured by
+# its state, the truth where > 2 mm off; tower_rl.perception.video); --live without --headless: the Isaac Sim window
+python scripts/rehearse.py --headless --device cpu --variant <v> --tiers D0 --episodes 1 --num_envs 1 --seed 7000 \
+    --bundle results/bundles/teacher_t45_final --perception <model.pt> --video results/perception/videos [--video_maps]
+python scripts/check_camera_model.py --episode data/subset/<v>/<stem>.npz --frames_dir <jpeg dir> --frames 0 \
+    --out results/perception/calib/<name>   # projected recorded poses on organizer JPEGs: shift ~(0, 0)
+```
+
 ## Development
 
 ### Layout
@@ -247,6 +308,7 @@ the remaining tower is > 10 mm from its episode-start pose, while the generator'
 | `tower_rl/eval/` | Metrics (TSR/GSR/PSR/LHPR/ODR), operation tracker, chunked runner, perception-noise model |
 | `tower_rl/skills/` | Skill envs (`grasp_lift`, `place_release`), shared actor observations, transit planner, PPO config, TorchScript export |
 | `tower_rl/graph/` | `State`/`SkillCall` interface, graph builder + JSONs, executor, rehearsal reports |
+| `tower_rl/perception/` | Pose estimator: camera models, box geometry and labels, training data, keypoint network, multi-view fit, closed-loop observer |
 | `configs/` | Physics, scene, tiers, robot model, layouts, skill YAMLs (every scoring-relevant tunable) |
 | `BUILDLOG.md` | Dated build log: acceptance numbers and deviations from the build instructions |
 
