@@ -47,13 +47,42 @@ class CameraPerception:
         self.light_log = []
         self.video = None  # optional tower_rl.perception.video.EpisodeVideos: a frame per call (network mode)
         self.cases = []
+        self.orient = None     # set_official_orient: per env OrientationChooser
+        self.orient_log: list[dict] = []
+
+    def set_official_orient(self, refs: dict):
+        """Deliver the fixed cameras of Tasks 1-3 unrotated (as the official evaluator does, Lessons-v1 §3) and turn
+        them back with the adapter's per-episode orientation choice (``tower_rl.perception.orient``)."""
+        from tower_rl.perception.orient import OrientationChooser
+
+        self.orient = [OrientationChooser(refs) for _ in self.est]
 
     def reset(self, variant: str, seeds: list[int]):
         for est in self.est:
             est.reset(variant)
         self.seeds = seeds
+        if self.orient is not None:
+            for ch in self.orient:
+                ch.reset()
         if self.video is not None:
             self.video.close()
+
+    def _delivered(self, e: int, rgb: dict) -> dict:
+        """Env e's four images in kp_v2's convention (``deliver``), or, with ``set_official_orient``, as the official
+        evaluator delivers them and then through the orientation choice."""
+        im = {n: deliver(n, rgb[n][e]) for n in CAMERA_IDS}
+        if self.orient is None:
+            return im
+        from tower_rl.perception.orient import FIXED, fallback_rotate
+
+        variant = self.est[e].variant
+        if fallback_rotate(variant):  # official run 1: Tasks 1-3's fixed cameras arrive unrotated (the raw capture)
+            im = {n: (np.ascontiguousarray(np.rot90(a, 2)) if n in FIXED else a) for n, a in im.items()}
+        ch = self.orient[e]
+        if not ch.decided:
+            info = ch.decide(variant, im)
+            self.orient_log.append({"seed": self.seeds[e], "variant": variant, **info})
+        return ch.apply(im)
 
     def set_domain(self, world, dom):
         """Apply the episodes' lighting (robustness case "lighting") to the rendered station lights."""
@@ -69,13 +98,11 @@ class CameraPerception:
         self.light_log = self.lights.apply(dom)
 
     def _node(self, e: int, est: PoseEstimator) -> dict:
-        if self.policy is None or e >= len(self.policy.runs):
+        """The policy's current node (``policy.node_info``: the executor's graph node, the student's option node)."""
+        nd = self.policy.node_info(e) if self.policy is not None else {}
+        if not nd:
             return {}
-        run = self.policy.runs[e]
-        if run.i >= len(run.g["nodes"]):
-            return {}
-        nd = run.g["nodes"][run.i]
-        return {"skill": nd.get("skill"), "node": nd.get("id"), "block": est.block_ids.index(nd["block"]) if nd.get("block") in est.block_ids else None}
+        return {"skill": nd.get("skill"), "node": nd.get("node"), "block": est.block_ids.index(nd["block"]) if nd.get("block") in est.block_ids else None}
 
     def _oracle_maps(self, est: PoseEstimator, s):
         rec = {"pos": np.asarray(s.block_pos).tolist(), "quat": np.asarray(s.block_quat).tolist(), "half": est.half.cpu().numpy().tolist(),
@@ -97,7 +124,8 @@ class CameraPerception:
                 cam = world.scene[key]
                 cam.update(0.0, force_recompute=True)
                 rgb[name] = cam.data.output["rgb"][..., :3].cpu().numpy()
-            x = torch.stack([torch.as_tensor(np.ascontiguousarray(deliver(n, rgb[n][e]))) for e in envs for n in CAMERA_IDS])
+            dl = {e: self._delivered(e, rgb) for e in envs}
+            x = torch.stack([torch.as_tensor(np.ascontiguousarray(dl[e][n])) for e in envs for n in CAMERA_IDS])
             cm, em, mm, hm = self.est[0].heatmaps_batch(x)  # one forward pass for every requesting env's four images
         out = []
         for k, (e, s) in enumerate(zip(envs, states)):
@@ -113,11 +141,10 @@ class CameraPerception:
                 out.append(s)
                 continue
             maps = self._oracle_maps(est, s) if self.oracle else (cm[sl], em[sl], mm[sl], hm[sl])
-            focus = None  # the block the executor's current node acts on
-            if self.policy is not None and e < len(self.policy.runs):
-                run = self.policy.runs[e]
-                if run.i < len(run.g["nodes"]) and run.g["nodes"][run.i].get("block") in est.block_ids:
-                    focus = [est.block_ids.index(run.g["nodes"][run.i]["block"])]
+            focus = None  # the block the policy's current node / option acts on
+            fb = self.policy.focus_block(e) if self.policy is not None else None
+            if fb in est.block_ids:
+                focus = [est.block_ids.index(fb)]
             pos, quat, conf = est(None, s.q, s.width, maps=maps, focus=focus)
             R = geo.quat_to_mat(torch.as_tensor(quat)).numpy()
             Rt = geo.quat_to_mat(torch.as_tensor(np.asarray(s.block_quat, dtype=np.float64))).numpy()
@@ -126,12 +153,7 @@ class CameraPerception:
             for i in range(2):
                 if s.width[i] < 0.055:
                     held |= np.linalg.norm(s.block_pos - pinch[i], axis=-1) < 0.03
-            node = {}
-            if self.policy is not None and e < len(self.policy.runs):
-                run = self.policy.runs[e]
-                if run.i < len(run.g["nodes"]):
-                    nd = run.g["nodes"][run.i]
-                    node = {"skill": nd.get("skill"), "block": est.block_ids.index(nd["block"]) if nd.get("block") in est.block_ids else None}
+            node = {k: v for k, v in self._node(e, est).items() if k != "node"}
             self.log.append({"seed": self.seeds[e], "t": round(float(s.t), 2), "err_mm": 1000 * np.linalg.norm(pos - s.block_pos, axis=-1),
                              "err_deg": rot_err_deg(R, Rt), "conf": conf, "held": held, "fixed": est.fixed.cpu().numpy(), **node,
                              "pos": pos, "quat": quat, "true_pos": np.asarray(s.block_pos), "true_quat": np.asarray(s.block_quat),
@@ -151,8 +173,13 @@ class CameraPerception:
         b = focus[0] if focus else None
         node = self._node(e, est)
         run = self.policy.runs[e] if self.policy is not None and e < len(self.policy.runs) else None
-        lines = [f"{est.variant}   {self.video.tier}   seed {self.seeds[e]}   case {self.cases[e] if e < len(self.cases) else '-'}"
+        case = self.cases[e] if e < len(self.cases) else "-"
+        lines = [f"{est.variant}   {self.video.tier}   seed {self.seeds[e]}   case {case}"
                  f"      t {s.t:6.1f} s      estimator call {est.calls}"]
+        if run is not None and hasattr(run, "option"):  # the student's current option (tower_rl.student.runtime)
+            d = run.option
+            lines[0] += "      decision " + ("-" if d is None else d.option + (f" goal {d.goal}" if d.goal is not None else "")
+                                           + (f" ({d.arm})" if d.arm else ""))
         line = f"node {node.get('node', 'done')} ({node.get('skill', '-')})"
         if b is not None:
             line += f"    target {est.block_ids[b]}: error {r['err_mm'][b]:.1f} mm / {r['err_deg'][b]:.1f} deg, confidence {conf[b]:.1f}"
@@ -170,7 +197,7 @@ class CameraPerception:
                     est.fixed.cpu().numpy(), [h for h in held if h is not None], est.block_ids,
                     truth=(np.asarray(s.block_pos), np.asarray(s.block_quat)), focus=b, lines=lines,
                     maps=tuple(m.float().cpu().numpy() for m in maps) if self.video.maps else None, device=est.dev)
-        self.video.add(e, f"{est.variant}_{self.video.tier}_seed{self.seeds[e]}", img)
+        self.video.add(e, f"{est.variant}_{self.video.tier}_{case}_seed{self.seeds[e]}", img)
 
     def save(self, path):
         """The per-call log (numpy arrays per call) as a pickle, for diagnosing failed episodes."""
@@ -200,6 +227,11 @@ class CameraPerception:
         ok = conf >= 0.5
         out = {"calls": len(self.log), "all": st(np.ones_like(ok)), "confident": st(ok), "foundations": st(ok & fixed),
                "movable_static": st(ok & ~fixed & ~held), "held": st(ok & held)}
+        if self.orient_log:  # set_official_orient: the per-episode choices
+            out["orient"] = {"episodes": len(self.orient_log), "rotated": sum(r["rotate"] for r in self.orient_log),
+                             "by_correlation": sum(r["how"] == "correlation" for r in self.orient_log),
+                             "min_winner": min(max(r["same"] or 0, r["rot180"] or 0) for r in self.orient_log),
+                             "choices": self.orient_log}
         # the target block of each call's node, per skill (what the skill acts on)
         tgt = [(r.get("skill"), r["err_mm"][r["block"]], r["err_deg"][r["block"]]) for r in self.log if r.get("block") is not None]
         for sk in sorted({t[0] for t in tgt}):

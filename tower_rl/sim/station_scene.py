@@ -77,7 +77,8 @@ def camera_cfgs(meta: dict, scale: float = 1.0, data_types=("rgb",), update_pose
 
 def make_station_scene_cfg(variant: str, num_envs: int, cameras: bool = False, cam_scale: float = 1.0,
                            env_spacing: float = 3.0, extras: dict | None = None, cam_data_types=("rgb",),
-                           cam_update_pose: bool = False) -> InteractiveSceneCfg:
+                           cam_update_pose: bool = False, finger_effort: float | None = None) -> InteractiveSceneCfg:
+    """``finger_effort`` (N) overrides the layout's finger effort limit (student plan Step 0.3: Tasks 1-3 at 3 N)."""
     meta = load_station_meta(STATION_JSON)
     phys = load_yaml("physics")
     layout = Layout.load(variant)
@@ -85,7 +86,8 @@ def make_station_scene_cfg(variant: str, num_envs: int, cameras: bool = False, c
     home = load_yaml("scene")["home_qpos"]
     attrs = {"station": AssetBaseCfg(prim_path="{ENV_REGEX_NS}/Station", spawn=sim_utils.UsdFileCfg(usd_path=meta["wrapper"]))}
     # Task 4/5: the generator applied a 3 N finger effort limit (Tasks 1-3 data: 22 N, the recorded drive readback)
-    finger_effort = layout.physics.get("finger_effort_n")
+    if finger_effort is None:
+        finger_effort = layout.physics.get("finger_effort_n")
     for arm in ARMS:
         q = torch.tensor(home[arm], dtype=torch.float32)
         qf = q_full(q[:7], q[7:8]).tolist()

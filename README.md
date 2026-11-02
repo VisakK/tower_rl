@@ -3,13 +3,17 @@
 Isaac Lab recreation of the [TOWER CoRL 2026 challenge](https://challenge.tower-benchmark.com/docs/) evaluator
 (two AgileX Nero arms, Jenga towers) as the base for a reinforcement-learning approach.
 
+**Reproducing the submission:** [`reproduce/README.md`](reproduce/README.md) rebuilds `student_v1_3`, the evaluated
+submission. It trains the teacher, distils the student, freezes the bundle and serves it, one script per stage. The
+design write-ups are in [`docs/`](docs).
+
 ## Setup
 
 All commands run from the repository root with the Isaac Lab virtual environment active:
 
 ```bash
-source ~/Documents/moves/env_isaaclab/bin/activate   # Isaac Sim 5.1.0 (pip) + Isaac Lab 2.3.0
-cd ~/Documents/tower_rl
+source <your Isaac Lab venv>/bin/activate   # Isaac Sim 5.1.0 (pip) + Isaac Lab 2.3.0
+cd <this repository>
 ```
 
 `data/`, `assets_m/` and `results/` are not in git. On a fresh clone, download the assets, the dataset metadata and
@@ -287,6 +291,113 @@ python scripts/check_camera_model.py --episode data/subset/<v>/<stem>.npz --fram
     --out results/perception/calib/<name>   # projected recorded poses on organizer JPEGs: shift ~(0, 0)
 ```
 
+## Student (learned decision layer; in progress)
+
+Plan: `~/Documents/corl_challenge/Student-distillation-plan.MD`; progress and gate numbers: BUILDLOG "session 5". The
+student replaces the executor's graph pointer by a learned option switcher over the executor's own node classes:
+`tower_rl/student/spec.py` (goals and option node templates per variant, from the graph JSONs), `runtime.py` (option
+loop, runtime memory, mechanical rules, `ShadowPolicy`), `oracle.py` (graph mode = the executor's decisions exactly;
+state mode = the truth-reading training expert), `tokens.py` (switcher inputs, features v1), `logging.py` (training
+shards), `noise.py` (estimator-like noise fitted on the camera-loop logs), `inject.py` (failure injection for data),
+`switcher.py` (the network, TorchScript export, decider), `fakeworld.py` (a kinematic stand-in for tests).
+
+```bash
+# rehearse with the option runtime instead of the executor (dirs get _student-<name>); --shadow: the executor drives,
+# the student gets the same states and every chunk is compared (parity)
+python scripts/rehearse.py --headless --device cpu --variant task2-2_cross_tower_transfer_2 --tiers D0 --episodes 4 \
+    --bundle results/bundles/teacher_t45_final --student oracle_graph [--shadow]
+# parity / A-B tables of two result roots (per cell TSR/GSR/PSR/ODR, identical event sequences, first divergences)
+python -I scripts/compare_runs.py <rootA> <rootB> [--suffix_a S] [--suffix_b S] [--no_info]
+# executor vs runtime without Isaac (kinematic fake world, every variant x scripted failure scenario)
+python scripts/student_fake_parity.py --workers 8
+# estimator noise: fit on the perception logs, then rehearse with it (dirs get _estnoise)
+python scripts/fit_estimator_noise.py --min_calls 40
+python scripts/rehearse.py ... --est_noise configs/student/noise.yaml
+# data: the state-mode oracle acts and labels; failure injection and exploration; shards under <dir>/<variant>/<tier>/
+python scripts/rehearse.py ... --student oracle_state --collect results/student/data/<round> --inject 0.15 --explore 0.1 \
+    --est_noise configs/student/noise.yaml
+# switcher: behaviour cloning on rounds of shards, offline evaluation, closed loop
+python scripts/train_switcher.py --data results/student/data/r0 [more rounds] --out results/student/models/<name>
+python scripts/eval_switcher_offline.py --model results/student/models/<name>/switcher.pt --data results/student/data/r0
+python scripts/rehearse.py ... --student results/student/models/<name>/switcher.pt --est_noise configs/student/noise.yaml
+# DAgger round: the switcher acts (the oracle with probability beta), the oracle labels
+python scripts/rehearse.py ... --student <switcher.pt> --beta 0.5 --collect results/student/data/r1 --inject 0.1 ...
+# finger effort override (Step 0.3 grip check): --finger_effort 3 [--graph_set '{"gripper_closed_width": 0.0425}']
+```
+
+Queues used in session 5 (each runs from a frozen copy of the code under `~/Documents/tower_rl_snapshots/`):
+`results/student/{gpu_queue_camera_teacher,cpu_queue_grip_check,cpu_queue_parity_g3a,cpu_queue_parity_g3b,
+cpu_queue_round0,cpu_queue_eval,cpu_queue_dagger}.sh`.
+
+### Serving the student to the challenge (`tower-infer-v1`, plan Step 11)
+
+`tower_rl/server/`: `tower_protocol.py` is the starter kit's codec and spec helpers (verbatim), `handler.py` the kit's
+session machinery with one model state per evaluation session (reset clears it; it survives reconnects), `student.py`
+the bundle behind it (MANIFEST-checked, kp_v2 on the GPU, the switcher) and the logs. The kit
+(`data/challenge/tower-policy-example.zip`) and `track.json` (all ten tasks, 10 Hz) come from the challenge site.
+
+```bash
+# serve a frozen bundle (artifact_identity = the bundle tar's sha256); logs under results/student/server/<name>/
+python scripts/serve_student.py --track data/challenge/track.json --bundle results/bundles/student_v1 --name <name>
+# probe it as the worker does: qualification-like checks (every variant, two resets, zero images) ...
+python scripts/probe_server.py ws://127.0.0.1:9001 --track data/challenge/track.json
+# ... or organizer episodes streamed at 10 Hz, estimates compared with the recorded poses (the evaluator camera path)
+python scripts/probe_server.py ws://127.0.0.1:9001 --track data/challenge/track.json \
+    --replay data/episodes_full/data/*/*.hdf5 --max_calls 300 --server_log results/student/server/<name>
+# closed loop through the server (G11a): the station scene renders, a WebSocket client sends the observations
+python scripts/serve_student.py --track data/challenge/track.json --camera_source render --port 9011 --name ws_loop &
+python scripts/ws_loop.py --headless --device cpu --variant task2-2_cross_tower_transfer_2 --tiers D0 D1 --episodes 4 \
+    --num_envs 2 --seed 7000 --track data/challenge/track.json --url ws://127.0.0.1:9011 --out_root results/student/ws_loop/<name>
+# the official endpoint: server + Cloudflare quick tunnel in tmux session "tower" (prints the wss:// model URL)
+results/student/serve_official.sh <name>        # stop: results/student/stop_official.sh
+# episodes from the server's side (ran to the 210 s limit, or ended early), next to a local run's successes
+python scripts/server_episodes.py results/student/server/<name> --since <ISO time> --track data/challenge/track.json \
+    --compare results/student/closed_loop/student_v1_kp_v2 --episodes
+# any other job while the endpoint is up: own memory-capped scope, paused while the evaluation runs, killed if the
+# server's GPU headroom gets low (results/student/logs/eval_guard.log)
+python3 scripts/eval_guard.py --name <name> [--mem 36G] [--idle-min 20] [--min-free-gb 2] -- <command ...>
+# official-run tools (scripts/official/): watch_official.py (watcher; WATCH_NAME=<endpoint>), obs_check.py (orientation /
+# visible blocks per variant), orient_test.py (kp_v2 offline on official frames, fixed cameras turned or not),
+# call_pace.py (call pacing; second argument the endpoint), task4_outcomes.py / task5_outcomes.py (official episodes
+# re-scored with the mirror's rules), adapter_replay.py (a bundle's adapter on the official first frames, CPU)
+```
+
+### `student_v1_1` and the official mirror (Plan-v1.1, session 7)
+
+`student_v1_1` is `student_v1`'s networks with opt-in runtime changes set in its graphs (`idle_chunk: 16`,
+`blind_guard`, `finished_guard`, `push_settle`) and the fixed cameras' per-episode orientation
+(`perception/orient_refs.npz`, `tower_rl/perception/orient.py`); every flag is off by default (teacher and parity
+unchanged). `corl_challenge/Student-v1.1.MD` has the results.
+
+```bash
+# orientation references from the dataset's first frames, checked on every official first frame of a server run
+python scripts/build_orient_refs.py --check results/student/server/official_1
+# the official mirror: episodes to 210 s, success on the final arrangement, Task 4 pushes judged on their rest states;
+# --official_orient (camera loop / ws_loop): Tasks 1-3's fixed cameras delivered unrotated, as the evaluator does
+python scripts/rehearse.py ... --mirror [--official_orient] --tiers D1 --case nominal lightweight heavy uneven_weights \
+    slippery high_friction shifted_assembly irregular_layers lighting combined
+python scripts/mirror_points.py <out_root> [--by_case]      # TSR / LHPR / ODR, fitted task score and points per variant
+# a code snapshot for long jobs and servers; a second official endpoint beside official_1
+scripts/make_snapshot.sh <name>
+PORT=9002 SESSION=tower_v1_1 SNAP=~/Documents/tower_rl_snapshots/server_v1_1 BUNDLE=$PWD/results/bundles/student_v1_1 \
+    EXTRA="--policy_id tower-student-v1-1 --plugin_version 2" results/student/serve_official.sh official_v1_1
+SESSION=tower_v1_1 results/student/stop_official.sh
+```
+
+### The recovery node (Plan-v1.1 §5)
+
+`tower_rl/recovery/contracts.py` (each goal's postcondition and the structure rule, on truth or estimates),
+`tower_rl/recovery/rules.py` (the recovery rules, the `repush` option's preconditions, the abstention log). The teacher:
+`--student oracle_state_v2` (the state oracle with the rules on truth). The student: graph flag `recovery` (the rules
+on its estimates), or the switcher with features v2 (`tower_rl/student/tokens.py`: the contracts in its tokens and the
+`repush` option; collect with `--features v2 [--inject_set ...]`, train with `train_switcher.py --features v2`).
+
+```bash
+python scripts/recovery_review.py <out_root>   # decisions by rule, abstentions by cause, failures no rule touched
+results/v1_1/cpu_collect_v2.sh <snapshot> <round> <episodes per variant> <seed> <decider> [beta] [parallel]
+results/v1_1/cpu_v2_pipeline.sh <snapshot> <round-0 log>    # BC, a DAgger round, BC, the comparison with bc_r2
+```
+
 ## Development
 
 ### Layout
@@ -309,6 +420,8 @@ python scripts/check_camera_model.py --episode data/subset/<v>/<stem>.npz --fram
 | `tower_rl/skills/` | Skill envs (`grasp_lift`, `place_release`), shared actor observations, transit planner, PPO config, TorchScript export |
 | `tower_rl/graph/` | `State`/`SkillCall` interface, graph builder + JSONs, executor, rehearsal reports |
 | `tower_rl/perception/` | Pose estimator: camera models, box geometry and labels, training data, keypoint network, multi-view fit, closed-loop observer |
+| `tower_rl/student/` | Student: task spec, option runtime, oracles, switcher, noise model, distilled Task 5 skills, server adapter |
+| `tower_rl/server/` | Challenge policy server (`tower-infer-v1`): the starter kit's protocol, per-session model state, logs |
 | `configs/` | Physics, scene, tiers, robot model, layouts, skill YAMLs (every scoring-relevant tunable) |
 | `BUILDLOG.md` | Dated build log: acceptance numbers and deviations from the build instructions |
 

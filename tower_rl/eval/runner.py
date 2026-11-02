@@ -3,7 +3,10 @@
 ``policy.act(states, env_ids)`` returns one chunk ``[H, 16]`` (1 <= H <= 16, absolute joints + widths in m) per
 requesting env; every row is held for 0.1 s (10 Hz = 3 x 30 Hz ticks). An env stops on task success, at the time
 budget (210 s) or on a policy error (exception, wrong shape, non-finite values), which counts as a failed episode.
-Operations are scored by :class:`tower_rl.eval.operations.OperationTracker` every 30 Hz tick.
+With ``full_episode`` (the official mirror, Plan-v1.1 §2.2: official episodes run to 210 s whatever happens) an env
+runs to the time budget and success is judged on the final arrangement; ``extra["t_first_success"]`` keeps when the
+tracker first reported success. Operations are scored by :class:`tower_rl.eval.operations.OperationTracker` every 30 Hz
+tick.
 Import after ``AppLauncher`` (uses the station scene).
 """
 
@@ -64,7 +67,8 @@ def make_trackers(world: StationWorld, n: int, goals: dict | None = None, op_cfg
     if lay.family == "pushdown":
         pushes = [Push(world.block_ids.index(p.block), p.arm, np.asarray(p.direction, dtype=float)) for p in lay.pushes]
         center = np.asarray(lay.pads["source"]["center"][:2], dtype=float)
-        return [PushTracker(world.variant, pushes, mov, center, op_cfg) for _ in range(n)]
+        found = [world.block_ids.index(b) for b in lay.pads["source"].get("foundation_blocks", []) if b in world.block_ids]
+        return [PushTracker(world.variant, pushes, mov, center, op_cfg, foundation=found) for _ in range(n)]
     transfers = tracker_transfers(world, goals)
     structure = [world.block_ids.index(b) for b in lay.movable_ids if lay.role(b) in ("side", "roof")]
     return [OperationTracker(world.variant, transfers, mov, op_cfg, structure=structure) for _ in range(n)]
@@ -84,6 +88,13 @@ def arm_distance(world: StationWorld, qj: torch.Tensor) -> torch.Tensor:
     return torch.cdist(pts[0], pts[1]).flatten(1).min(-1).values
 
 
+def _focus_of(policy, e: int):
+    """(block id, skill) of the node the policy's env e runs (``focus_block`` / ``node_info``), for the noise model."""
+    if not hasattr(policy, "focus_block"):
+        return None
+    return lambda: (policy.focus_block(e), policy.node_info(e).get("skill"))
+
+
 def _validate(chunk) -> np.ndarray:
     a = np.asarray(chunk, dtype=np.float32)
     if a.ndim != 2 or a.shape[1] != 16 or not 1 <= a.shape[0] <= 16:
@@ -95,9 +106,13 @@ def _validate(chunk) -> np.ndarray:
 
 def run_batch(world: StationWorld, policy: Policy, sampler: DomainSampler | None, seed: int, max_time_s: float = 210.0,
               op_cfg: OpCfg | None = None, episode: Episode | None = None, stage: int = 0, rate_hz: int = 10,
-              noise: NoiseCfg | None = None, log=print, observe=None) -> list[EpisodeOutcome]:
-    """One episode per env. ``episode`` replaces the domain sample by that recording's initial state and goals.
-    ``rate_hz`` is the track: 10 (rows held 0.1 s) or 30 (rows held 1/30 s). ``observe(world, envs, states)``
+              noise=None, log=print, observe=None, case: list[str] | None = None,
+              full_episode: bool = False) -> list[EpisodeOutcome]:
+    """One episode per env. ``episode`` replaces the domain sample by that recording's initial state and goals;
+    ``case`` forces the sampler's robustness case per env (default: drawn from ``seed``).
+    ``rate_hz`` is the track: 10 (rows held 0.1 s) or 30 (rows held 1/30 s). ``noise``: a ``NoiseCfg`` (independent
+    per-block perception noise) or a ``tower_rl.student.noise.NoiseModel`` (the estimator's errors, by block class).
+    ``observe(world, envs, states)``
     replaces the requesting envs' states (e.g. block poses estimated from the rendered cameras, tower_rl.perception);
     its ``reset(variant, seeds)`` runs with the policy's."""
     assert rate_hz in (10, 30)
@@ -110,13 +125,13 @@ def run_batch(world: StationWorld, policy: Policy, sampler: DomainSampler | None
         goals = {m["block_id"]: m["goal"] for m in episode.target_mapping if "goal" in m} or None  # Task 4: push targets
         cases = ["episode"] * n
     else:
-        dom = sampler.sample(n, gen)
+        dom = sampler.sample(n, gen, case=case)
         world.reset(dom, stage=stage, gen=gen)
         cases = dom.case
     pos, quat = world.block_pose()
     trackers = make_trackers(world, n, goals, op_cfg)
     for e in range(n):
-        trackers[e].reset(pos[e].cpu().numpy())
+        trackers[e].reset(pos[e].cpu().numpy(), quat[e].cpu().numpy())
     # Task 4 / 5: a shadow tracker without our 10 mm "remaining tower in place" rule (the generator's records only show
     # its collapse rule: 30 deg tilt / 15 mm drop), reported as extra["task_success_collapse_only"]
     shadows = None
@@ -132,11 +147,18 @@ def run_batch(world: StationWorld, policy: Policy, sampler: DomainSampler | None
         if episode is None and hasattr(observe, "set_domain"):  # e.g. the case "lighting" on the rendered cameras
             observe.set_domain(world, dom)
     queues = [deque() for _ in range(n)]
-    noisers = [PerceptionNoise(noise, len(world.block_ids), seeds[e] + 7) for e in range(n)] if noise else None
+    if noise is None:
+        noisers = None
+    elif hasattr(noise, "make"):  # tower_rl.student.noise.NoiseModel: estimator-like noise, focused on the policy's target
+        fixed = np.array([bool(world.layout.fixed[b]) for b in world.block_ids])
+        noisers = [noise.make(world.block_ids, fixed, seeds[e] + 7, focus=_focus_of(policy, e)) for e in range(n)]
+    else:
+        noisers = [PerceptionNoise(noise, len(world.block_ids), seeds[e] + 7) for e in range(n)]
     act_wall = []
     done = [False] * n
     errors: list[str | None] = [None] * n
     t_end = [max_time_s] * n
+    t_first = [None] * n  # full_episode: when the tracker first reported success
     rows = world._cmd.clone()
     wall0 = time.time()
     arm_gap = torch.full((n,), float("inf"), device=world.dev)  # closest approach of the two arms (Step 8.2)
@@ -152,13 +174,34 @@ def run_batch(world: StationWorld, policy: Policy, sampler: DomainSampler | None
             if shadows is not None and not done[e] and not shadow_done[e]:
                 shadow_done[e] = shadows[e].update(t, p[e], q4[e], sp[e], pinch[e], w[e] < HOLD_WIDTH)
             if not done[e] and trackers[e].update(t, p[e], q4[e], sp[e], pinch[e], w[e] < HOLD_WIDTH):
-                done[e] = True
-                t_end[e] = t
+                if t_first[e] is None:
+                    t_first[e] = t
+                if not full_episode:
+                    done[e] = True
+                    t_end[e] = t
+
+    def with_truth(need, states):
+        """Per-goal truth for the student's labels (plan §2.4): ``ops`` (satisfied now), ``ops_own`` (the goal's own
+        condition, without the lower layers / structure), ``ops_latched`` (G, P latched) and ``disturbed``
+        (disturbances counted so far), in ``privileged`` (no deployable code reads them)."""
+        p, q4 = world.block_pose()
+        sp = world.block_speed()
+        qj, w = world.joints()
+        pinch = world.pinch_world(qj)
+        p, q4, sp, w, pinch = (x.cpu().numpy() for x in (p, q4, sp, w, pinch))
+        out = []
+        for e, st in zip(need, states):
+            tr = trackers[e]
+            args = (p[e], q4[e], sp[e], pinch[e], w[e] < HOLD_WIDTH)
+            priv = dict(st.privileged, ops=tr.instant(*args), ops_own=tr.instant(*args, own=True),
+                        ops_latched=tr.latched(), disturbed=tr.disturbed_so_far())
+            out.append(dataclasses.replace(st, privileged=priv))
+        return out
 
     while world.time < max_time_s - 1e-6 and not all(done):
         need = [e for e in range(n) if not done[e] and not queues[e]]
         if need:
-            states = [world.state(e) for e in need]
+            states = with_truth(need, [world.state(e) for e in need])
             if observe is not None:
                 states = observe(world, need, states)
             if noisers:
@@ -184,12 +227,15 @@ def run_batch(world: StationWorld, policy: Policy, sampler: DomainSampler | None
     for e in range(n):
         o = trackers[e].outcome(t_end[e], errors[e])
         o.extra.update({"case": cases[e], "seed": seeds[e], "wall_s": round(time.time() - wall0, 1),
+                        "full_episode": full_episode, "t_first_success": t_first[e],
                         "min_arm_gap_m": round(float(arm_gap[e]), 3),
                         "act_ms_mean": round(1000 * float(np.mean(act_wall)), 2) if act_wall else None,
                         "act_ms_max": round(1000 * float(np.max(act_wall)), 2) if act_wall else None,
                         "act_calls": len(act_wall)})
         if hasattr(policy, "episode_log"):
             o.extra["policy_log"] = policy.episode_log(e)
+        if hasattr(policy, "episode_extra"):  # e.g. the student's shadow comparison
+            o.extra.update(policy.episode_extra(e))
         if shadows is not None:
             o.extra["task_success_collapse_only"] = bool(o.task_success or shadow_done[e])
         outs.append(o)

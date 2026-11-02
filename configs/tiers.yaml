@@ -20,7 +20,7 @@ tiers:
   D0:
     cases: {nominal: {}}
   D1:
-    cases:
+    cases: &d1_cases
       nominal: {}
       lightweight: {mass_scale: [0.4, 0.7]}
       heavy: {mass_scale: [1.4, 2.0]}
@@ -32,6 +32,12 @@ tiers:
       lighting: {light_scale: [0.25, 2.0], color_temp_k: [3000, 8500], light_azimuth_deg: 60.0}
       combined: {per_block_mass: [0.5, 1.8], mixed_friction: true, assembly_xy_m: 0.010, assembly_yaw_deg: 8.0,
                  light_scale: [0.4, 1.6]}
+  D1e:  # v1.3 (student collection and one check cell): D1 + a case that is not documented: the official irregular
+    # starts reach 15-22 mm between layers (v1.2 run, BUILDLOG 2026-10-29), and a top block can fall off before the arm
+    # arrives (2-2 41780038). A tier of its own, so D1's random case draws stay as they were
+    cases:
+      <<: *d1_cases
+      irregular_edge: {assembly_xy_m: 0.007, layer_xy_m: 0.011, layer_yaw_deg: 5.0}
   D2:   # training superset: every factor at once, ranges widened ~20 %
     cases:
       everything: {assembly_xy_m: 0.018, assembly_yaw_deg: 12.0, layer_xy_m: 0.010, layer_yaw_deg: 6.0,

@@ -17,14 +17,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from isaaclab.app import AppLauncher  # noqa: E402
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-parser.add_argument("--skill", choices=["grasp_lift", "place_release", "push", "insert", "push_in"], default="grasp_lift")
+parser.add_argument("--skill", choices=["grasp_lift", "place_release", "push", "insert", "push_in", "reach"],
+                    default="grasp_lift")
 parser.add_argument("--arm", choices=["left", "back"], default="left")
 parser.add_argument("--num_envs", type=int, default=None)
 parser.add_argument("--max_iterations", type=int, default=None)
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--tag", default="")
-parser.add_argument("--override", default="{}", help="JSON dict merged into the skill YAML")
+parser.add_argument("--override", default="{}", help="JSON dict merged into the skill YAML (@file: read it from a file)")
 parser.add_argument("--resume", default=None, help="checkpoint .pt to continue from")
+parser.add_argument("--resume_no_optimizer", action="store_true", help="with --resume: the weights only (a widened "
+                                                                      "checkpoint, scripts/widen_push_checkpoint.py)")
 parser.add_argument("--smoke", action="store_true", help="tiny run: check dims, NaNs and timing")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -41,7 +44,7 @@ from tower_rl.paths import RESULTS_DIR  # noqa: E402
 from tower_rl.skills.ppo_cfg import runner_cfg  # noqa: E402
 
 torch.backends.cuda.matmul.allow_tf32 = True
-overrides = json.loads(args.override)
+overrides = json.loads(Path(args.override[1:]).read_text() if args.override.startswith("@") else args.override)
 overrides["arm"] = args.arm
 if args.skill == "grasp_lift":
     from tower_rl.skills.grasp_lift_env import GraspLiftEnv as Env, GraspLiftEnvCfg as EnvCfg
@@ -51,6 +54,8 @@ elif args.skill == "push":
     from tower_rl.skills.push_env import PushEnv as Env, PushEnvCfg as EnvCfg
 elif args.skill == "insert":
     from tower_rl.skills.insert_env import InsertEnv as Env, InsertEnvCfg as EnvCfg
+elif args.skill == "reach":
+    from tower_rl.skills.reach_env import ReachEnv as Env, ReachEnvCfg as EnvCfg
 else:
     from tower_rl.skills.push_in_env import PushInEnv as Env, PushInEnvCfg as EnvCfg
 
@@ -69,7 +74,20 @@ env = Env(cfg)
 wrapped = RslRlVecEnvWrapper(env)
 runner = OnPolicyRunner(wrapped, rcfg.to_dict(), log_dir=str(run_dir), device=args.device)
 if args.resume:
-    runner.load(args.resume)
+    runner.load(args.resume, load_optimizer=not args.resume_no_optimizer)
+if args.resume and skill["ppo"].get("resume_noise_std"):  # the action noise is a learned parameter of the checkpoint
+    with torch.no_grad():
+        runner.alg.policy.std.fill_(float(skill["ppo"]["resume_noise_std"]))
+sched = skill["ppo"].get("entropy_schedule")  # {to, iters}: linear from entropy_coef (reach: the noise floor limits precision)
+if sched:
+    _update, _e0, _it = runner.alg.update, runner.alg.entropy_coef, [0]
+
+    def _update_annealed(*a, **k):
+        runner.alg.entropy_coef = _e0 + (sched["to"] - _e0) * min(1.0, _it[0] / sched["iters"])
+        _it[0] += 1
+        return _update(*a, **k)
+
+    runner.alg.update = _update_annealed
 print(f"[train] {experiment}: {cfg.scene.num_envs} envs, run dir {run_dir}", flush=True)
 t0 = time.time()
 runner.learn(num_learning_iterations=rcfg.max_iterations, init_at_random_ep_len=True)

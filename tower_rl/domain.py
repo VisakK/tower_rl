@@ -54,10 +54,14 @@ class DomainSampler:
         self.robot = cfg["robot"] if robot_randomization else None
         self.L, self.M, self.device = max_layers, max_blocks, device
 
-    def sample(self, n: int, gen: torch.Generator | None = None, case: str | None = None) -> DomainSample:
+    def sample(self, n: int, gen: torch.Generator | None = None, case: str | list[str] | None = None) -> DomainSample:
+        """``case``: force one case for all ``n`` episodes, or one per episode (a list of ``n`` names)."""
         dev = self.device
-        if case is not None:
+        if isinstance(case, str):
             idx = torch.full((n,), self.case_names.index(case), dtype=torch.long)
+        elif case is not None:
+            assert len(case) == n, (len(case), n)
+            idx = torch.tensor([self.case_names.index(c) for c in case], dtype=torch.long)
         else:
             idx = torch.randint(len(self.case_names), (n,), generator=gen, device=dev)
         names = [self.case_names[i] for i in idx.tolist()]

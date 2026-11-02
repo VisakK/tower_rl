@@ -1,0 +1,129 @@
+# written by scripts/fit_estimator_noise.py; do not edit by hand
+written: 2026-10-22T06:59
+by: scripts/fit_estimator_noise.py
+source_logs:
+  kp_v2: [perception/closed_loop/kp_v2/task4-2_full_tower_pushdown_2/D0_perception/perception_log.pkl, perception/closed_loop/kp_v2/task4-2_full_tower_pushdown_2/D1_perception/perception_log.pkl,
+    student/closed_loop/teacher_kp_v2/task1-3_tower_transfer_3/D0_perception/perception_log.pkl, student/closed_loop/teacher_kp_v2/task1-3_tower_transfer_3/D1_perception/perception_log.pkl,
+    student/closed_loop/teacher_kp_v2/task2-3_cross_tower_transfer_3/D0_perception/perception_log.pkl, student/closed_loop/teacher_kp_v2/task2-3_cross_tower_transfer_3/D1_perception/perception_log.pkl,
+    student/closed_loop/teacher_kp_v2/task4-3_full_tower_pushdown_3/D0_perception/perception_log.pkl, student/closed_loop/teacher_kp_v2/task4-3_full_tower_pushdown_3/D1_perception/perception_log.pkl,
+    student/closed_loop/teacher_kp_v2/task5-3_tower_insertion_3/D0_perception/perception_log.pkl, student/closed_loop/teacher_kp_v2/task5-3_tower_insertion_3/D1_perception/perception_log.pkl]
+  kp_v1b: [perception/closed_loop/kp_v1b/task4-3_full_tower_pushdown_3/D0_perception/perception_log.pkl, perception/closed_loop/kp_v1b/task4-3_full_tower_pushdown_3/D1_perception/perception_log.pkl,
+    perception/closed_loop/kp_v1b/task5-3_tower_insertion_3/D0_perception/perception_log.pkl, perception/closed_loop/kp_v1b/task5-3_tower_insertion_3/D1_perception/perception_log.pkl]
+  kp_v1: [perception/closed_loop/kp_v1/task1-2_tower_transfer_2/D0_perception/perception_log.pkl, perception/closed_loop/kp_v1/task1-2_tower_transfer_2/D1_perception/perception_log.pkl,
+    perception/closed_loop/kp_v1/task1-3_tower_transfer_3/D0_perception/perception_log.pkl, perception/closed_loop/kp_v1/task1-3_tower_transfer_3/D1_perception/perception_log.pkl,
+    perception/closed_loop/kp_v1/task2-2_cross_tower_transfer_2/D0_perception/perception_log.pkl, perception/closed_loop/kp_v1/task2-2_cross_tower_transfer_2/D1_perception/perception_log.pkl,
+    perception/closed_loop/kp_v1/task2-3_cross_tower_transfer_3/D0_perception/perception_log.pkl, perception/closed_loop/kp_v1/task2-3_cross_tower_transfer_3/D1_perception/perception_log.pkl,
+    perception/closed_loop/kp_v1/task3-2_vertical_stacking_2/D0_perception/perception_log.pkl, perception/closed_loop/kp_v1/task3-2_vertical_stacking_2/D1_perception/perception_log.pkl,
+    perception/closed_loop/kp_v1/task3-3_vertical_stacking_3/D0_perception/perception_log.pkl, perception/closed_loop/kp_v1/task3-3_vertical_stacking_3/D1_perception/perception_log.pkl,
+    perception/closed_loop/kp_v1/task4-2_full_tower_pushdown_2/D0_perception/perception_log.pkl, perception/closed_loop/kp_v1/task4-2_full_tower_pushdown_2/D1_perception/perception_log.pkl,
+    perception/closed_loop/kp_v1/task4-3_full_tower_pushdown_3/D0_perception/perception_log.pkl, perception/closed_loop/kp_v1/task4-3_full_tower_pushdown_3/D1_perception/perception_log.pkl,
+    perception/closed_loop/kp_v1/task5-2_tower_insertion_2/D0_perception/perception_log.pkl, perception/closed_loop/kp_v1/task5-2_tower_insertion_2/D1_perception/perception_log.pkl,
+    perception/closed_loop/kp_v1/task5-3_tower_insertion_3/D0_perception/perception_log.pkl, perception/closed_loop/kp_v1/task5-3_tower_insertion_3/D1_perception/perception_log.pkl]
+moving_speed_m_s: 0.01
+classes:
+  foundation:
+    model: kp_v2
+    calls: 289890
+    traces: 432
+    trace_len_median: 364.0
+    pos_mm: [0.093, 0.221, 0.518]
+    rot_deg: [0.032, 0.104, 0.279]
+    conf_levels: [0.9996, 0.0004, 0.0, 0.0]
+  static:
+    model: kp_v2
+    calls: 354258
+    traces: 1048
+    trace_len_median: 140.0
+    pos_mm: [0.202, 142.178, 428.136]
+    rot_deg: [0.313, 61.598, 107.257]
+    conf_levels: [0.9312, 0.0066, 0.0082, 0.054]
+  held:
+    model: kp_v2
+    calls: 9281
+    traces: 225
+    trace_len_median: 36.0
+    pos_mm: [0.063, 0.175, 90.474]
+    rot_deg: [0.085, 0.286, 93.473]
+    conf_levels: [0.9954, 0.0001, 0.0045, 0.0]
+  moving:
+    model: kp_v2
+    calls: 823
+    traces: 26
+    trace_len_median: 6.0
+    pos_mm: [0.253, 185.311, 208.66]
+    rot_deg: [0.434, 92.754, 103.782]
+    conf_levels: [0.6229, 0.0057, 0.3371, 0.0343]
+  fallen:
+    model: kp_v2
+    calls: 1500
+    traces: 15
+    trace_len_median: 100.0
+    pos_mm: [null, null, null]
+    rot_deg: [null, null, null]
+    conf_levels: [0.0, 0.0, 0.0033, 0.9967]
+  target:transit:
+    model: kp_v2
+    calls: 3611
+    traces: 429
+    trace_len_median: 7.0
+    pos_mm: [0.13, 94.219, 337.072]
+    rot_deg: [0.195, 46.272, 100.003]
+    conf_levels: [0.9377, 0.0, 0.0094, 0.0529]
+  target:grasp_lift:
+    model: kp_v2
+    calls: 1269
+    traces: 178
+    trace_len_median: 7.0
+    pos_mm: [0.084, 0.193, 0.348]
+    rot_deg: [0.109, 0.368, 0.536]
+    conf_levels: [1.0, 0.0, 0.0, 0.0]
+  target:place_release:
+    model: kp_v2
+    calls: 1730
+    traces: 146
+    trace_len_median: 11.0
+    pos_mm: [0.115, 0.318, 2.511]
+    rot_deg: [0.186, 0.472, 1.735]
+    conf_levels: [0.9977, 0.0023, 0.0, 0.0]
+  target:push:
+    model: kp_v2
+    calls: 5129
+    traces: 211
+    trace_len_median: 21.0
+    pos_mm: [0.093, 2.498, 247.511]
+    rot_deg: [0.154, 1.156, 92.06]
+    conf_levels: [0.6854, 0.0023, 0.0764, 0.2359]
+  target:insert:
+    model: kp_v2
+    calls: 412
+    traces: 29
+    trace_len_median: 14.0
+    pos_mm: [0.056, 0.093, 9.066]
+    rot_deg: [0.114, 0.171, 2.914]
+    conf_levels: [0.9927, 0.0024, 0.0049, 0.0]
+  target:push_in:
+    model: kp_v2
+    calls: 1472
+    traces: 28
+    trace_len_median: 54.5
+    pos_mm: [0.299, 3.516, 31.738]
+    rot_deg: [0.386, 4.353, 89.296]
+    conf_levels: [0.5523, 0.3872, 0.0238, 0.0367]
+bank: results/student/noise/traces_v2.npz
+push_lost:
+  model: kp_v2
+  samples: 5129
+  tilt_bins_deg: [0.0, 10.0, 30.0, 60.0, 181.0]
+  along_bins_m: [0.0, 0.03, 0.06, 0.1, 10.0]
+  p_lost:
+  - [0.0815, 0.0035, 0.0183, 0.059]
+  - [0.7955, 0.9762, 0.3615, 0.3523]
+  - [0.9948, 0.5, 0.625, 0.6172]
+  - [0.7232, 0.6579, 0.7754, 0.6239]
+  run_lengths: [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 6, 1, 1, 21, 2, 2, 2, 1, 21, 2, 2, 21, 2, 2, 2, 2, 2, 2, 2, 2, 1, 21,
+    2, 2, 2, 2, 2, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 1, 7, 2, 1, 2, 21, 20, 21, 2, 2, 2, 2, 2, 1, 2, 5, 21, 2, 2, 2, 2, 2, 21,
+    2, 2, 2, 6, 2, 1, 2, 21, 2, 2, 2, 2, 2, 21, 21, 2, 2, 1, 9, 27, 2, 6, 2, 6, 2, 2, 2, 2, 2, 39, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 1, 21, 21, 2, 2, 2, 2, 2, 6, 2, 6, 2, 21, 240, 218, 21, 2, 20, 2, 6, 2, 2, 190, 200, 2, 14, 2, 1, 1, 2, 2,
+    2, 21, 21]
+  coast_decay: 0.8
+  coast_max_calls: 5

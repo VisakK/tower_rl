@@ -8,7 +8,8 @@ gripper channel: the fingers stay closed). Success: the target left the tower (c
 or fallen >= 2 cm beyond 0.10 m) while every other block stayed in place (moved <= 10 mm, not tilted > 30 deg or
 dropped > 15 mm). Failure: the remaining tower moved (structure broken) or the target was shoved sideways >= 4 cm.
 
-Actor observation (65, base frame; ``tower_rl.skills.obs.push_actor_obs``). Critic: actor + true target pose in the
+Actor observation (65, base frame; ``tower_rl.skills.obs.push_actor_obs``; 67 with ``obs_noise.estimator``: the
+target's estimator losses and the seen / since-seen inputs, student plan Step 9a). Critic: actor + true target pose in the
 pinch frame, all slots relative to the target, presence, finger contact forces, dynamics scalars, joint state, true
 travel, worst disturbance.
 """
@@ -40,6 +41,13 @@ class PushEnvCfg(SkillEnvCfg):
     observation_space: int = ACTOR_DIM
     state_space: int = CRITIC_DIM
 
+    def setup(self, num_envs: int | None = None, device: str = "cuda:0", overrides: dict | None = None):
+        super().setup(num_envs, device, overrides)
+        if (self.skill.get("obs_noise") or {}).get("estimator"):  # student plan Step 9a: + seen, since_seen
+            self.observation_space = ACTOR_DIM + 2
+            self.state_space = CRITIC_DIM + 2
+        return self
+
 
 class PushEnv(SkillEnvBase):
     cfg: PushEnvCfg
@@ -61,6 +69,27 @@ class PushEnv(SkillEnvBase):
         # keypoints in the pinch frame: centre, both jaw sides, along the approach
         self.kp = torch.tensor([[0, 0, 0], [0, 0.03, 0], [0, -0.03, 0], [0, 0, 0.03]], dtype=torch.float32, device=dev)
         self.seed_by_layer = {int(k): torch.tensor(v["q"], device=dev) for k, v in P.priors()[self.arm].items()}
+        # the pose estimator's failure modes on the target (student plan Step 9a; obs_noise.estimator, off by default):
+        # lost while it tips over the tower edge (fitted P(lost | tilt, travel), recorded run lengths), its pose then
+        # coasted (last seen + last displacement x decay^k, k <= coast_max) or stale, and the actor told so
+        self.est = (self.sk.get("obs_noise") or {}).get("estimator")
+        self.seen = torch.ones(n, dtype=torch.bool, device=dev)
+        self.lost_k = torch.zeros(n, dtype=torch.long, device=dev)
+        self.lost_left = torch.zeros(n, dtype=torch.long, device=dev)
+        self.last_p = torch.zeros(n, 3, device=dev)
+        self.last_q = torch.zeros(n, 4, device=dev)
+        self.last_q[:, 0] = 1
+        self.last_v = torch.zeros(n, 3, device=dev)
+        self._est_cache = None
+        if self.est:
+            from tower_rl.config import load_yaml
+            pl = load_yaml(self.est.get("noise_yaml", "student/noise"))["push_lost"]
+            self.lost_tilt_bins = torch.tensor(pl["tilt_bins_deg"], device=dev)
+            self.lost_along_bins = torch.tensor(pl["along_bins_m"], device=dev)
+            self.p_lost = torch.tensor([[0.0 if x is None else x for x in row] for row in pl["p_lost"]], device=dev)
+            self.lost_runs = torch.tensor(pl["run_lengths"] or [2], dtype=torch.long, device=dev)
+            self.coast_decay = float(self.est.get("coast_decay", pl.get("coast_decay", 0.8)))
+            self.coast_max = int(self.est.get("coast_max_calls", pl.get("coast_max_calls", 5)))
 
     # ------------------------------------------------------------------ reset
     def _reset_idx(self, env_ids):
@@ -163,6 +192,12 @@ class PushEnv(SkillEnvBase):
         self.yaw0[env_ids] = geo.yaw_from_quat(tquat)
         self.prev_along[env_ids] = 0.0
         self.noisy_p0[env_ids] = tpos + self.noise_pos[env_ids][ar, target]
+        self.seen[env_ids] = True
+        self.lost_k[env_ids] = 0
+        self.lost_left[env_ids] = 0
+        self.last_p[env_ids] = self.noisy_p0[env_ids]
+        self.last_q[env_ids] = tquat
+        self.last_v[env_ids] = 0.0
         # arm: closed fingers around the pre-push pose (tight / wide) or close to the end face ("near" and "mid")
         g = self.sk["geometry"]
         zoff = torch.tensor([P.z_offset(self.arm, int(k)) for k in layer.tolist()], device=dev)
@@ -200,6 +235,46 @@ class PushEnv(SkillEnvBase):
         self.w_cmd[env_ids] = tw
         self.w_cmd_prev[env_ids] = tw
         self.robot.set_joint_position_target(q_full(self.q_cmd[env_ids], torch.full((r, 1), tw, device=dev)), env_ids=env_ids)
+
+    def noisy_block_poses(self):
+        """The base noise, then (``obs_noise.estimator``) the target's estimator losses: once per env step, so the
+        observation and the next action's scaling see the same estimate."""
+        p, q = super().noisy_block_poses()
+        if not self.est:
+            return p, q
+        step = int(self.common_step_counter)
+        if self._est_cache is not None and self._est_cache[0] == step:
+            return self._est_cache[1], self._est_cache[2]
+        n, dev = self.num_envs, self.device
+        ar = torch.arange(n, device=dev)
+        t = self.target_slot
+        p, q = p.clone(), q.clone()
+        tpos, tquat = self.block_poses_local()
+        tp, tq = tpos[ar, t], tquat[ar, t]
+        tilt = torch.rad2deg(torch.acos((1 - 2 * (tq[:, 1] ** 2 + tq[:, 2] ** 2)).clamp(-1, 1)))
+        along = (tp[:, :2] - self.block_p0[ar, t, :2]).norm(dim=-1)
+        ti = (torch.bucketize(tilt, self.lost_tilt_bins, right=True) - 1).clamp(0, self.p_lost.shape[0] - 1)
+        ai = (torch.bucketize(along, self.lost_along_bins, right=True) - 1).clamp(0, self.p_lost.shape[1] - 1)
+        pl = self.p_lost[ti, ai]
+        L = self.lost_runs.float().mean()
+        p_start = pl / (L * (1 - pl) + pl).clamp_min(1e-9)
+        fresh = self.episode_length_buf > 0  # an episode's first observation is a fit
+        in_run = self.lost_left > 0
+        start = ~in_run & (self._rand(n) < p_start) & fresh
+        draw = self.lost_runs[torch.randint(len(self.lost_runs), (n,), generator=self.gen, device=dev)]
+        self.lost_left = torch.where(start, draw, self.lost_left)
+        lost = (in_run | start) & fresh
+        self.lost_left = torch.where(lost, (self.lost_left - 1).clamp(min=0), self.lost_left)
+        k = torch.where(lost, self.lost_k + 1, torch.zeros_like(self.lost_k))
+        moving = self.last_v.norm(dim=-1) > 0.003
+        coast = (self.coast_decay ** k.float())[:, None] * self.last_v * ((k <= self.coast_max) & moving)[:, None]
+        obs_p = torch.where(lost[:, None], self.last_p + coast, p[ar, t])
+        obs_q = torch.where(lost[:, None], self.last_q, q[ar, t])
+        self.last_v = torch.where(lost[:, None], self.last_v, obs_p - self.last_p)
+        self.last_p, self.last_q, self.lost_k, self.seen = obs_p, obs_q, k, ~lost
+        p[ar, t], q[ar, t] = obs_p, obs_q
+        self._est_cache = (step, p, q)
+        return p, q
 
     # ------------------------------------------------------------------ actions
     def _action_scale(self):
@@ -270,6 +345,8 @@ class PushEnv(SkillEnvBase):
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         done = terminated | time_out
         self.extras["log"] = {"step_along_mm": float(s["along"].mean() * 1000)}
+        if self.est:  # Step 9a: how often the target is observed lost (estimator losses)
+            self.extras["log"]["target_unseen_frac"] = float((~self.seen).float().mean())
         if done.any():
             dn = done.float().sum()
             self.extras["log"] |= {
@@ -327,7 +404,8 @@ class PushEnv(SkillEnvBase):
             pb=pb, qb=qb, prev_pb=self.prev_pinch_b, prev_qb=self.prev_pinch_qb, dt=self.step_dt, tgt_pb=tgt_pb, tgt_qb=tgt_qb,
             target_pb=npb[ar, self.target_slot], target_qb=nqb[ar, self.target_slot], dir_b=dir_b, along=along, lateral=lat,
             dyaw=dyaw, contact_pb=cpb, contact_qb=cqb, other_pb=npb, other_qb=nqb, other_valid=valid, z0_world=self.z0,
-            prev_actions=self.actions, progress=self.episode_length_buf.float() / self.max_episode_length)
+            prev_actions=self.actions, progress=self.episode_length_buf.float() / self.max_episode_length,
+            **({"seen": self.seen, "since_seen": self.lost_k.float() / 5} if self.est else {}))
         self.prev_pinch_b, self.prev_pinch_qb = pb.clone(), qb.clone()
         tp_true, tq_true = self.base.to_base(s["tpos"], s["tquat"])
         trel_p, trel_q = geo.frame_relative(pb, qb, tp_true, tq_true)
@@ -343,5 +421,5 @@ class PushEnv(SkillEnvBase):
             actor, trel_p, rot6d(trel_q), slots, self.present.float(), f, other[:, None], dyn, s["q"], jv,
             self.q_cmd - s["q"], s["along"][:, None], s["disp_nt"].max(-1).values[:, None],
         ], -1)
-        assert actor.shape[1] == ACTOR_DIM and critic.shape[1] == CRITIC_DIM, (actor.shape, critic.shape)
+        assert actor.shape[1] == self.cfg.observation_space and critic.shape[1] == self.cfg.state_space, (actor.shape, critic.shape)
         return {"policy": torch.nan_to_num(actor), "critic": torch.nan_to_num(critic)}

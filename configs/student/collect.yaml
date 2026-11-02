@@ -1,0 +1,12 @@
+# Student data collection (plan Appendix A, Steps 6 and 8). Seeds: round r = 100000 + 10000 r.
+round0: {episodes: {D0: 100, D1: 200}, oracle: state, p_inject: 0.15, explore_eps: 0.1, seed: 100000}
+dagger: {rounds: [{beta: 0.5, episodes: 1500, seed: 110000}, {beta: 0.0, episodes: 1500, seed: 120000}], p_inject: 0.1}
+progress_every_calls: 5
+inject:              # one perturbation per injected option, through opt-in node-spec hooks (spec["inject"])
+  acquire: {lateral_m: [0.01, 0.03], drop_at_lift_m: [0.025, 0.05]}    # shifted pre-grasp | a drop part-way up
+  deliver: {goal_shift_m: [0.005, 0.015], goal_yaw_deg: [4, 8], drop_after_rows: [5, 25]}  # misplace | mis-yaw | drop
+  push_off: {lateral_m: [0.015, 0.03], low_m: 0.01}                     # shove | low pusher (structure)
+  # features v2 collection adds (rehearse.py --inject_set): a push stopped short, the block left over the footprint
+  #   push_off: {..., stop_r_m: [0.125, 0.15], short_frac: 0.35}
+  insert: {across_m: [0.001, 0.003], low_m: 0.001}                      # entry offset across | low
+  push_home: {across_m: [0.001, 0.003], low_m: 0.001}

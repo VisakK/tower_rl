@@ -1,0 +1,163 @@
+# reach (corl_challenge/Reach-PPO-plan.MD): goal-conditioned pinch-pose reaching, JAiLeR-style (arXiv 2011.06332):
+# joint-velocity actions integrated to q_des, sag-compensated rows, three-point pose error, nested-region curriculum,
+# goals one after another without resets. Units m, rad unless named *_deg.
+arm: left                      # left | back: separate policies (different drive gains)
+num_envs: 4096
+episode_steps: 300             # 10 Hz rows (30 s); several goals per episode
+action:
+  v_max: 1.5                   # rad/s per joint at |a| = 1 (the IK controller's 0.15 rad per row)
+  map: blend                   # joint speed v_max * (lin_frac a + (1 - lin_frac) a|a|). square (a|a|, runs 5-10): fine
+                               # near zero for exploration (linear: noise 0.08 alone moved joints ~0.12 rad/s, above the
+                               # 0.05 settle limit) but zero slope at 0: run 10 parked 2-6 deg off the goal, outputs
+                               # ~0.08 -> 0.009 rad/s. blend keeps a linear slope there
+  lin_frac: 0.3
+  limit_margin: 0.03           # q_des kept this far inside every joint limit (as the IK controller)
+obs:
+  kp_len_m: 0.10               # the three points on the goal / pinch axes (pose error)
+  fine_m: 0.01                 # + tanh(pose error / 1 cm): millimetre resolution (normalised, the raw error's 2 mm was
+                               # ~0.04 units; run 9 plateaued at level 1 with p50 4.1 mm / 3.6 deg). 0: off (pre-run 10)
+goal:
+  limit_s: 6.0                 # settle: a goal not settled on by then ends (counts as its error then); timer: the longest goal
+  switch: timer                # timer: goals last min_frac..1 of limit_s (settle: end on settling; PPO learned to jitter
+                               # on the goal to keep its reward, 10-30 run 4: 52 % in tolerance at the end, 8 % settled)
+  min_frac: 0.5
+  settle: {pos_m: 0.005, rot_deg: 2.0, qd: 0.05, rows: 3}   # stopped on the goal for 3 rows (JAiLeR: zero velocity)
+  abort_m: 10.0                # three-point error beyond this ends the episode (off: at 2.4 the early random drift was
+                               # cut off and PPO learned to stand still, 10-30 run 1)
+  candidates: 16
+  prior_frac: 0.25             # candidates drawn around the demo posture priors (configs/skills/posture_priors.yaml)
+  prior_sigma: 0.15
+  min_move_m: 0.02             # a goal moves the pinch at least this much or ...
+  min_move_deg: 5.0            # ... turns it this much
+  workspace: {x: [-0.05, 1.0], y: [-0.70, 0.05], z: [0.02, 0.35], max_tilt_deg: 60.0}   # station frame
+  tasks:                       # Phase 2: at the top level, this fraction of goals are the teacher's recorded transit goals
+    frac: 0.0                  # (rehearse.py --transit_log; tower_rl/skills/reach_tasks.py), jittered by +-pos_m and a
+    files: results/reach/tasks/goals_*.jsonl   # yaw of +-yaw_deg (checks use a held-out set: heldout_*.jsonl)
+    pos_m: 0.02
+    yaw_deg: 10.0
+curriculum:
+  levels:                      # nested regions of goal displacement from the current pose; q_sigma 0: anywhere
+    - {pos_m: 0.10, rot_deg: 15.0, q_sigma: 0.15}
+    - {pos_m: 0.20, rot_deg: 30.0, q_sigma: 0.30}
+    - {pos_m: 0.40, rot_deg: 60.0, q_sigma: 0.60}
+    - {pos_m: 10.0, rot_deg: 180.0, q_sigma: 0.0}
+  window: 2000                 # end-of-goal errors averaged over this many goals
+  advance: {pos_m: 0.01, rot_deg: 3.0}   # JAiLeR: next region at 1 cm average error
+  trim: 0.05                   # less the worst 5 % (run 4: 6 % ran off into a joint limit; the rest averaged 3.5 mm / 2.6 deg)
+reset:
+  posture_sigma: 0.1           # episode start: home / demo posture + this noise (rad) ...
+  uniform_frac: 0.2            # ... or anywhere within the limits (pinch above the table)
+  task_frac: 0.0               # ... or where a recorded teacher transit started (goal.tasks.files), + 0.02 rad
+  uniform: workspace           # anywhere = a joint-uniform pose with the pinch in goal.workspace, pointing down (joint:
+                               # any pose in the limits; 10-30 run 11: 27 / 28 of those first goals ran away vs 0 / 101
+                               # from postures, and 48 % of goals after a runaway ran away too)
+payload: {frac: 0.0, kg: 0.1056, force: true}   # Phase 2: a held block (the command compensates it, as the
+                               # controller does; force: its weight on the gripper in the sim, off before 10-30 22:50)
+speed:                         # Phase 2b: a pinch speed limit per goal (m/s), an actor input (obs) and a penalty above it
+  frac: 0.0                    # (reward.speed). P2a carried a block to the pre-place pose at ~0.95 m/s peak, ~4.6 m/s^2
+  range_m_s: [0.08, 0.6]       # (10-31 task goals; the planned transit: 0.12 m/s held, 0.25 empty, 0.6 m/s^2). frac:
+  free_m_s: 2.0                # goals with a limit, log-uniform in range_m_s (the rest: free_m_s, i.e. none); such a
+  extra_s: 2.0                 # goal lasts at least distance / limit + extra_s. obs: the input (a checkpoint without
+  obs: false                   # it: scripts/widen_push_checkpoint.py <in> <out> 64 1, then --resume_no_optimizer)
+rand:                          # Phase 2 robustness (plan §2.4), off by default
+  q_noise_rad: 0.0             # joint-angle observation noise (sigma, per row); rewards use the true angles
+held_block:                    # P2d (corl_challenge/Reacher-V1.MD §11.1): a real block in the fingers. P4 dropped heavy blocks
+  frac: 0.0                    # on held transits (10-31: they slid 6 mm per row on a 0.14 m/s rise, the planned transit's
+                               # 0.01-0.07 m/s kept them within 2 mm), and payload.force has no fingers or friction. frac:
+                               # episodes that start holding one (the rest empty, the block parked on a shelf); 0: the
+                               # arm-only scene as before
+  obs: false                   # + finger width and regime (actor), block-in-pinch state and dynamics (critic)
+  settle_rows: 4               # rows at the episode start with the arm held still while the fingers squeeze the block
+  regime_frac: 0.3             # episodes in the Task 4/5 finger regime (memory "Tasks 4/5 mechanics": 3 N effort limit,
+  regimes:                     # 42.5 mm command, ~2.9 N per finger); the rest Tasks 1-3 (22 N, 40 mm: ~3.9 N per finger)
+    t13: {effort_n: 22.0, closed_m: 0.040}
+    t45: {effort_n: 3.0, closed_m: 0.0425}
+  empty_closed_frac: 0.2       # empty episodes with the fingers closed (0.0: Task 4 pusher, 0.02: Task 5 push-in pusher)
+  empty_closed_m: [0.0, 0.02]
+  offset:                      # grasp offset (block frame, mm) and rotation (deg): 922 grasps in the 10-31 rehearsals
+    x_mm: [-3.5, 2.1]          # (policy_log grasp_offset_mm, grasp_rot_deg): x along the block p5..p95 -3.5..2.1, |x|
+    z_mm: [-5.1, 1.8]          # max 30; z up the block p5..p95 -5.1..1.8; rotation p50 1.3, p99 4.2
+    wide_frac: 0.05            # off-centre grips (Studentv1_3_plan offcentre_place), uniform +-wide_x_mm along
+    wide_x_mm: 15.0
+    rot_deg: 1.5               # half-normal sigma, about a random axis
+  nominal_frac: 0.3            # held episodes at the station's nominal block (mass x1, wood 0.40 / 0.23, fingers 2.4 / 2.0)
+  ramp_steps: 24000            # the rest ramp from nominal to the ranges below over this many env steps (1,000 iterations)
+  mass_scale: [0.4, 2.0]       # D1 lightweight .. heavy (the command compensates the nominal 0.1056 kg only)
+  friction_static: [0.15, 1.3] # D1 slippery .. high friction (block)
+  friction_dynamic_ratio: [0.47, 0.62]   # dynamic / static (D1 slippery 0.07-0.14 / 0.15-0.30, high 0.5-0.8 / 0.9-1.3)
+  finger_friction_static: [1.0, 2.6]     # configs/tiers.yaml robot (the station: 2.4 / 2.0)
+  finger_friction_dynamic_ratio: [0.8, 0.85]
+  start_tasks: 0.6             # held episodes starting where a recorded held transit started (goal.tasks.files), + 0.02 rad
+  min_z_m: 0.07                # held goals and starts: pinch at least this high (the block hangs ~2 cm below it) ...
+  max_tilt_deg: 30.0           # ... and the approach axis within this of straight down
+  vertical_frac: 0.3           # held goals that are a straight rise or descent of 3..12 cm (the via-points of a carry)
+  vertical_m: [0.03, 0.12]
+  goal_time_scale: 2.0         # held goals last this many times longer (timer switch): a gentle carry takes 10-12 s
+  drop_m: 0.025                # block this far from its start offset in the pinch frame: dropped (the episode ends)
+  drop_width_m: 0.044          # ... or the opening below this (the executor's held_width[0]: the fingers closed past it)
+track:                         # P2e (Reacher-V1.MD §11.2): moving goals, the executor's moving goal (reach_tasks.Carrot) as a
+  frac: 0.0                    # trained capability. frac / held_frac: empty / held goals that start at the pinch and slide
+  held_frac: 0.0               # to the sampled goal at a sampled speed (log-uniform), acceleration and turn rate, then stop
+  v_m_s: [0.05, 0.5]
+  v_held_m_s: [0.03, 0.2]
+  a_m_s2: [0.2, 1.0]
+  w_rad_s: 1.0
+  extra_s: 2.0                 # a moving goal lasts at least its travel time + this
+  obs: false                   # + the goal's linear (m/s) and angular (rad/s) velocity, base frame (the executor: the
+                               # carrot's displacement per row)
+chunk:                         # Reacher-V2.MD §7.1: several rows per evaluator call. A chunk's first row sees the measured
+  lengths: [1]                 # joints, the rest the reacher's prediction (q_des less the offset q_des - q measured on the
+  weights: [1.0]               # first row; the opening measured there). Lengths drawn per chunk (1: closed loop, the
+  k_norm: 16                   # default); a new goal starts a new chunk. obs: + rows since the measured row / k_norm
+  obs: false                   # (actor), the true joints and pose error (critic; widen_push_checkpoint.py 73 1 17)
+reward:
+  coarse: 1.0                  # exp(-err_lambda d^2), d = three-point error (m): JAiLeR's term
+  err_lambda: 20.0
+  fine: 1.0                    # exp(-(d / fine_sigma)^2): the gradient for the last centimetre
+  fine_sigma_m: 0.02
+  mid: 1.0                     # exp(-(d / mid_sigma)^2): between the linear pull and the fine term (run 3 sat at 1.5 cm)
+  mid_sigma_m: 0.06
+  linear: 2.0                  # -linear * d: a pull toward the goal at any distance (the exponentials are flat far out;
+                               # without it run 1 settled 1 % of level-0 goals after 800 iterations)
+  effort: 0.005                # per rad/s^2 of joint acceleration (JAiLeR's lambda_eff)
+  action_rate: 0.1              # on the raw action change (clamped until run 7: joint 1 alternated -1 / +1 every row,
+                               # ~0.19 rad/s, on 92-98 % of rows; with raw means at +-3 every sample clamps the same, so
+                               # even 0.5 there gave no gradient)
+  action_bound: 0.5            # per unit of raw action beyond +-1 (run 5: raw means up to 24); linear (squared, run 8,
+                               # raw outliers of ~65 cost ~2,000 per row and swamped the returns)
+  joint_limit: 0.5             # q_des within 0.1 rad of the margin (0.1 until run 4: runaways pinned at a limit)
+  table: 1.0                   # pinch below 1.5 cm above the table
+  settle_bonus: 5.0
+  speed: 0.0                   # per row: (pinch speed - limit) / limit above the goal's speed limit (speed.*)
+  hold: 2.0                    # per row: exp(-(pos/s)^2 - (rot/s)^2 - (max |qd|/s)^2), still on the goal
+  hold_sigma: {pos_m: 0.004, rot_deg: 2.0, qd: 0.05}
+  hold_wide: 0.0                # the same, wider: a gradient between the fine term and hold (run 11 parked at 3 mm / 3 deg,
+  hold_wide_sigma: {pos_m: 0.010, rot_deg: 5.0, qd: 0.05}   # where hold pays ~0); 0: off (runs <= 11)
+  slip: 0.3                    # held_block: per mm the block moved in the pinch frame this row
+  slip_rot: 0.1                # ... and per degree it turned there
+  drift: 0.05                  # per mm of block offset from its start offset beyond drift_free_mm, per row
+  drift_free_mm: 2.0           # (the planned transit's creep on heavy blocks, 10-31 traces)
+  drop: 100.0                  # terminal: the block dropped. >= what the rest of an episode could cost (a slow carry far
+                               # from its goal earns ~ -0.5 per row, -50 discounted): dropping must never pay
+  table_held: 1.0              # pinch below held_block.min_z_m - 0.02 while holding (the block's underside near the table)
+ppo:
+  num_steps_per_env: 24
+  max_iterations: 3000
+  num_learning_epochs: 5
+  num_mini_batches: 4
+  learning_rate: 3.0e-4
+  schedule: adaptive
+  desired_kl: 0.016
+  entropy_coef: 0.01           # 0.005: action std 0.5 -> 0.04 in 800 iterations, before reaching was found
+  entropy_schedule: {to: 0.0005, iters: 2000}   # at a constant 0.01 the noise stayed ~0.3 (10-30 run 2: mean policy
+                               # 5 mm / 4.3 deg p50 on level 0, ~0 % settled within 2 deg)
+  gamma: 0.99
+  lam: 0.95
+  clip_param: 0.2
+  value_loss_coef: 1.0
+  max_grad_norm: 1.0
+  init_noise_std: 0.6
+  actor_hidden_dims: [256, 256, 128]
+  critic_hidden_dims: [512, 256, 128]
+  activation: elu
+  save_interval: 100

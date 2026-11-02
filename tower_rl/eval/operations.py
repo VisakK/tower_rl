@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from tower_rl.eval import mirror
 from tower_rl.eval.metrics import EpisodeOutcome
 
 
@@ -44,6 +45,10 @@ class OpCfg:
     collapse_drop_m: float = 0.015
     depart_m: float = 0.16                # Task 4: a pushed block's centre this far (xy) from the tower axis has left it,
     on_table_z: float = 0.02              # ... or one lying flat on the table (centre z) >= 0.09 m out (not leaning on it)
+    # Task 4 P (Plan-v1.1 §2.2): "radial" = v1 (departed as above, static for settle_s; latched); "rest" = the official
+    # mirror: judged at the end of the episode on the pushed block's rest state (tower_rl.eval.mirror: flat on the table,
+    # >= 2 mm outside the foundation footprint, not on another block, static), one operation per push (G = P)
+    push_rule: str = "radial"
 
 
 def _tilt(q_wxyz: np.ndarray) -> np.ndarray:
@@ -133,7 +138,7 @@ class OperationTracker:
             math.degrees(_yaw_err(_yaw(quat[t.block]), t.goal_yaw)) <= self.cfg.tol_yaw_deg
 
     # ------------------------------------------------------------------ API
-    def reset(self, pos: np.ndarray):
+    def reset(self, pos: np.ndarray, quat: np.ndarray | None = None):
         self.__post_init__()
         self.z0 = pos[:, 2].copy()
         self.pos0 = pos.copy()
@@ -195,6 +200,43 @@ class OperationTracker:
         self.task_success = all(self.g_ok) and all(self.p_ok) and ok and (t - self.final_since >= settle - 1e-6)
         return self.task_success
 
+    def held_mask(self, pos: np.ndarray, pinch: np.ndarray, closed: np.ndarray) -> np.ndarray:
+        """Blocks held now (as ``update``: per closed gripper, the nearest movable block within ``hold_radius_m``)."""
+        held = np.zeros(len(pos), dtype=bool)
+        for a in range(len(pinch)):
+            if closed[a]:
+                d = np.linalg.norm(pos[self.movable] - pinch[a], axis=-1)
+                j = int(np.argmin(d))
+                if d[j] <= self.cfg.hold_radius_m:
+                    held[self.movable[j]] = True
+        return held
+
+    def instant(self, pos: np.ndarray, quat: np.ndarray, speed: np.ndarray, pinch: np.ndarray, closed: np.ndarray,
+                own: bool = False) -> list[bool]:
+        """Per transfer: satisfied now, i.e. ``update``'s P condition without its settle time: released, within
+        tolerance of its goal, static, the latched lower-layer goals still in tolerance, and (Task 5) the tower's side /
+        roof blocks in place (student plan §2.4: the progress head's truth). ``own``: the block's own condition only
+        (released, in tolerance, static), for the state-mode oracle."""
+        held = self.held_mask(pos, pinch, closed)
+        intact = structure_intact(pos, quat, self.pos0, self.structure, self.cfg) if self.pos0 is not None else True
+        inside = [self._in_goal(k, pos, quat) for k in range(len(self.transfers))]
+        out = []
+        for k, tr in enumerate(self.transfers):
+            ok = inside[k] and not held[tr.block] and speed[tr.block] < self.cfg.static_speed
+            if not own:
+                ok = ok and intact and all(inside[j] for j, o in enumerate(self.transfers)
+                                           if o.dest_layer < tr.dest_layer and self.p_ok[j])
+            out.append(bool(ok))
+        return out
+
+    def latched(self) -> tuple[int, int]:
+        """(G, P) successes latched so far."""
+        return sum(self.g_ok), sum(self.p_ok)
+
+    def disturbed_so_far(self) -> int:
+        """Disturbed block-occurrences counted so far (closed windows and the current one)."""
+        return sum(len(w) for w in self.window_disturbed) + len(self.current_disturbed)
+
     def outcome(self, duration_s: float, error: str | None = None) -> EpisodeOutcome:
         windows = list(self.window_disturbed)
         n_ops = 2 * len(self.transfers)
@@ -239,12 +281,20 @@ class PushTracker:
       * Disturbances (ODR): per operation window, tower blocks other than the target (not yet departed) moving > 10 mm;
         blocks that already left the tower are debris, not counted.
       * Task success: every push succeeded in order, the structure never broke, everything static for final_settle_s.
+
+    With ``cfg.push_rule == "rest"`` (the official mirror) P_k is judged at the end, on block k's final rest state
+    (``mirror.rest_state``: "flat clear" and static), G_k = P_k (the site's LHPR matches one operation per push), and
+    task success = every P_k, in order, structure intact. The radial machinery above still tracks the order, the
+    structure and the operation windows. ``extra`` adds per push the rest kind, gap, tilt and z, how far the block moved
+    after its departure settled (later pushes knocking debris), the foundation's largest move, and
+    ``task_success_strict`` (also no debris moved > 10 mm: one candidate for the TSR condition official run 1 left open).
     """
     variant: str
     pushes: list[Push]
     movable: list[int]
     tower_center: np.ndarray  # [2]
     cfg: OpCfg = field(default_factory=OpCfg)
+    foundation: list[int] = field(default_factory=list)  # the tower's foundation blocks (the footprint)
 
     def __post_init__(self):
         k = len(self.pushes)
@@ -263,6 +313,10 @@ class PushTracker:
         self.task_success = False
         self.time = 0.0
         self.events: list[tuple[float, str]] = []
+        self.quat0 = None
+        self.p_pos = [None] * k     # where each pushed block was when its (radial) P latched
+        self.last = None            # the last update's (pos, quat, speed)
+        self.found_max_mm = 0.0
 
     def _op(self, idx: int):
         return ("G" if idx % 2 == 0 else "P", idx // 2)
@@ -274,17 +328,32 @@ class PushTracker:
     def _target(self) -> int | None:
         return None if self.pointer >= 2 * len(self.pushes) else self.pushes[self.pointer // 2].block
 
+    def footprint(self) -> tuple[np.ndarray, float]:
+        """(centre [2], yaw) of the foundation footprint at the start (the tower axis without foundation blocks)."""
+        if not self.foundation or self.pos0 is None or self.quat0 is None:
+            return np.asarray(self.tower_center, dtype=float), 0.0
+        return mirror.footprint_frame(self.pos0[self.foundation], self.quat0[self.foundation])
+
+    def rest_states(self, pos: np.ndarray, quat: np.ndarray) -> list[tuple[str, float, float, float]]:
+        c, yaw = self.footprint()
+        return [mirror.rest_state(pos[p.block], quat[p.block], c, yaw) for p in self.pushes]
+
     def _off_tower(self, pos: np.ndarray, b: int) -> bool:
         r = float(np.linalg.norm(pos[b, :2] - self.tower_center))
         return r >= self.cfg.depart_m or (r >= 0.09 and pos[b, 2] <= self.cfg.on_table_z)
 
-    def reset(self, pos: np.ndarray):
+    def reset(self, pos: np.ndarray, quat: np.ndarray | None = None):
         self.__post_init__()
         self.pos0 = pos.copy()
+        self.quat0 = None if quat is None else quat.copy()
         self.window_start = pos.copy()
 
     def update(self, t: float, pos: np.ndarray, quat: np.ndarray, speed: np.ndarray, pinch: np.ndarray, closed: np.ndarray):
         self.time = t
+        self.last = (pos, quat, speed)
+        if self.foundation:
+            self.found_max_mm = max(self.found_max_mm, 1000 * float(np.linalg.norm(
+                pos[self.foundation] - self.pos0[self.foundation], axis=-1).max()))
         order = [p.block for p in self.pushes]
         for b in order:
             if b not in self.departed and self._off_tower(pos, b):
@@ -304,6 +373,7 @@ class PushTracker:
                     self.depart_since[k] = self.depart_since[k] if self.depart_since[k] is not None else t
                     if t - self.depart_since[k] >= self.cfg.settle_s - 1e-6:
                         self.p_ok[k] = True
+                        self.p_pos[k] = pos[p.block].copy()
                         self.events.append((t, f"P{k} ok"))
                 else:
                     self.depart_since[k] = None
@@ -341,6 +411,22 @@ class PushTracker:
         self.task_success = ok and (t - self.final_since >= settle - 1e-6)
         return self.task_success
 
+    def instant(self, pos: np.ndarray, quat: np.ndarray, speed: np.ndarray, pinch: np.ndarray, closed: np.ndarray,
+                own: bool = False) -> list[bool]:
+        """Per push: satisfied now: the block is off the tower and static (student plan §2.4); with the "rest" rule:
+        its rest state is "flat clear" and it is static."""
+        if self.cfg.push_rule == "rest":
+            kinds = self.rest_states(pos, quat)
+            return [bool(kinds[k][0] == mirror.FLAT and speed[p.block] < self.cfg.static_speed)
+                    for k, p in enumerate(self.pushes)]
+        return [bool(self._off_tower(pos, p.block) and speed[p.block] < self.cfg.static_speed) for p in self.pushes]
+
+    def latched(self) -> tuple[int, int]:
+        return sum(self.g_ok), sum(self.p_ok)
+
+    def disturbed_so_far(self) -> int:
+        return sum(len(w) for w in self.window_disturbed) + len(self.current_disturbed)
+
     def outcome(self, duration_s: float, error: str | None = None) -> EpisodeOutcome:
         windows = list(self.window_disturbed)
         n_ops = 2 * len(self.pushes)
@@ -350,12 +436,26 @@ class PushTracker:
             final = set()
         else:
             final = set(self.current_disturbed)
+        g_ok, p_ok, success = list(self.g_ok), list(self.p_ok), bool(self.task_success)
+        extra = {"events": self.events, "structure_broken": self.structure_broken, "out_of_order": self.out_of_order,
+                 "foundation_moved_mm": round(self.found_max_mm, 1)}
+        if self.cfg.push_rule == "rest" and self.last is not None:
+            pos, quat, speed = self.last
+            kinds = self.rest_states(pos, quat)
+            p_ok = [bool(kd[0] == mirror.FLAT and speed[p.block] < self.cfg.static_speed)
+                    for kd, p in zip(kinds, self.pushes)]
+            g_ok = list(p_ok)
+            debris = [None if self.p_pos[k] is None else round(1000 * float(np.linalg.norm(pos[p.block] - self.p_pos[k])), 1)
+                      for k, p in enumerate(self.pushes)]
+            radial = success
+            success = all(p_ok) and not self.out_of_order and not self.structure_broken
+            extra.update(rest=[[kd[0], round(kd[1], 1), round(kd[2], 1), round(kd[3], 1)] for kd in kinds],
+                         debris_moved_mm=debris, task_success_radial=radial,
+                         task_success_strict=bool(success and all(d is None or d <= self.cfg.disturb_mm for d in debris)))
         counts = [len(w) for w in windows[:n_ops]]
-        if not self.task_success:
+        if not success:
             counts.append(len(final))
-        return EpisodeOutcome(self.variant, len(self.pushes), len(self.pushes), list(self.g_ok), list(self.p_ok), counts,
-                              bool(self.task_success) and error is None, duration_s, error,
-                              extra={"events": self.events, "structure_broken": self.structure_broken,
-                                     "out_of_order": self.out_of_order,
-                                     "disturbed_ids": [sorted(int(b) for b in w) for w in windows[:n_ops]]
-                                     + ([sorted(int(b) for b in final)] if not self.task_success else [])})
+        extra["disturbed_ids"] = [sorted(int(b) for b in w) for w in windows[:n_ops]] + \
+            ([sorted(int(b) for b in final)] if not success else [])
+        return EpisodeOutcome(self.variant, len(self.pushes), len(self.pushes), g_ok, p_ok, counts,
+                              success and error is None, duration_s, error, extra=extra)

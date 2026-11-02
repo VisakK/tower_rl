@@ -1,0 +1,7 @@
+{"reach": {"mode": "learned",
+           "policy": {"left": "results/reach/export/reach_left_p2fck9700.pt",
+                      "back": "results/reach/export/reach_back_p2fck8500.pt"},
+           "held": "learned", "v_held": {"left": 0.05, "back": 0.15},
+           "finish_rows": 8, "finish_mode": "ik", "finish_chunk": true,
+           "chunk": 16, "chunk_held": 16, "via_stall_s": 2.0,
+           "planned_targets": ["prepush", "prepushin"]}}

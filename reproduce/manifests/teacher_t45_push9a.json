@@ -1,0 +1,83 @@
+{
+ "created": "2026-10-20T03:52:57",
+ "git_commit": "22132a4a8f3d7f5d213629c6ea5f107e5c151ce0",
+ "git_dirty": true,
+ "skills": {
+  "grasp_lift_left": {
+   "source": "/home/visakii/Documents/tower_rl/results/skills/grasp_lift_left/2026-10-19_0821_1fa2bda7de_v5n_noise/model_final.pt",
+   "sha256": "06cf62c0add99ebdf6c1647a15c37ae8be9586e45c832cf2239071bce1ad56b1"
+  },
+  "grasp_lift_back": {
+   "source": "/home/visakii/Documents/tower_rl/results/skills/grasp_lift_back/2026-10-19_0622_6a2cd31282_v3n_noise/model_final.pt",
+   "sha256": "4e09cb40f4e4fc3ae2e688dd570b0526880c0f752d961d16a23f89d8923c7cad"
+  },
+  "place_release_left": {
+   "source": "/home/visakii/Documents/tower_rl/results/skills/place_release_left/2026-10-19_0133_cd7db0fad9_v1/model_400.pt",
+   "sha256": "94665db81f9c513864b60c5c31c40762d6cc4ca88864415c06088e6c4c72fba3"
+  },
+  "place_release_back": {
+   "source": "/home/visakii/Documents/tower_rl/results/skills/place_release_back/2026-10-19_0452_3898a85de9_v1_scratch/model_final.pt",
+   "sha256": "54ba987efcde2f653bafca8bba7a14459227c0e47226d13f9e6c92e86ecb25c8"
+  },
+  "push_left": {
+   "source": "/home/visakii/Documents/tower_rl/results/skills/push_left/2026-10-19_2338_4169273dc7_v3/model_final.pt",
+   "sha256": "6d6db833ff2b992618c659933e64a8bb15505b93c109d6a02f9c1d364bd242e4"
+  },
+  "push_back": {
+   "source": "/home/visakii/Documents/tower_rl/results/skills/push_back/2026-10-20_0110_92e764d0fc_v1c/model_final.pt",
+   "sha256": "7321642cb99ef0a534e2259d056bbd9906cb8ba3f00eee4ab3ba1d57498ca073"
+  }
+ },
+ "planned_fallbacks": [
+  "insert_back",
+  "insert_left",
+  "push_in_back",
+  "push_in_left"
+ ],
+ "files": {
+  "configs/layouts/task1-2_tower_transfer_2.yaml": "87a2a689dc9443c57256d0d41c6e50d83899eb6ce0e4ab4edf629b126daf1511",
+  "configs/layouts/task1-3_tower_transfer_3.yaml": "f595ce83bf5ef3d18f4e47d14f75dc76b4835315d4b65b38b39d83cceeddea1b",
+  "configs/layouts/task2-2_cross_tower_transfer_2.yaml": "bcd807c1e6357901ec3a0067b3266932b3da5f4f0ede2e7c4f02c558c8f8c4a2",
+  "configs/layouts/task2-3_cross_tower_transfer_3.yaml": "4b781bac5279b4c4bfb0d3eef4e0c4b09f2617e97d619e59cb0a6c8744d13c97",
+  "configs/layouts/task3-2_vertical_stacking_2.yaml": "f0dfbf32e78352d3c091ae842b1daa0873c5807255c3e605e99a213b7b2d8a31",
+  "configs/layouts/task3-3_vertical_stacking_3.yaml": "aa68651edd2aa312f97babb35c0645d1730da6c204e2f48d58a6e51df0c92719",
+  "configs/layouts/task4-2_full_tower_pushdown_2.yaml": "10e6ac245dcf1031f7c804097a189a36271997441074f25754477acfea37070a",
+  "configs/layouts/task4-3_full_tower_pushdown_3.yaml": "8971af03e92d39c9b13076718566c29c39813997d831ce17da1c7341992724aa",
+  "configs/layouts/task5-2_tower_insertion_2.yaml": "22b576791a1ec455e47db1ce5e6a36f4927136de7ca8c85ca524924bdde751c2",
+  "configs/layouts/task5-3_tower_insertion_3.yaml": "454e08a1e72818101722243536b9c76b96360bad35007e6c0aaebba53cb0d94a",
+  "configs/physics.yaml": "4c12b0848385e96edebe60f07d551623c978d06a54d04b1df885e57e308c07a7",
+  "configs/robot/nero.json": "1abaa13db559506ec2a4ff36e866fcab34e5bbf45e62847d61743af6d04fd8b3",
+  "configs/scene.yaml": "aefade1173318dc13c9ae781646302fff251873014f521c996d91119de23f7f5",
+  "configs/skills/grasp_geometry.yaml": "1165a122c2a2442133a0d9f89ca889452774626c3dd9ac19c2ac9c90200d0806",
+  "configs/skills/grasp_lift.yaml": "851390664730c3b8a9a9cf38a5f17bafc8f9d8da723818818d44bcaaf40b8c4b",
+  "configs/skills/insert.yaml": "f6e6c3d7fd09a3cc8a1cab1cde06ba4bd62cc8b1511bd73935e2c60e47cd4e71",
+  "configs/skills/place_release.yaml": "cf1af2e62e9a744ad0416c26f5a40a4fb95aee52b6dbc656b5f89feb2f403426",
+  "configs/skills/posture_priors.yaml": "b34e0448e527fa558ac55e1666ab88f082a50bab74df51689346f0c64a062447",
+  "configs/skills/push.yaml": "4ed17e3651f503d8af4f0c23e72b09cae44393342991df738a4e2c3c07b152bc",
+  "configs/skills/push_in.yaml": "184e7736f18f2327e3abce9c5924114b102bc4949bbb201ee1b3056240e876ea",
+  "configs/skills/push_priors.yaml": "6d4046b9e5e9247bb9aad06ef858e9ab3ac9647cd263cd3f43665a12d657a543",
+  "configs/tiers.yaml": "39200c457b9c5e6c0551062a705d2d02f7aea090e5671b856d31b1d1a47ac594",
+  "graphs/task1-2_tower_transfer_2.json": "4a755d2cf50ad7c1ecce1a170d5233cf4224de416559ace21add6dd598f75cb1",
+  "graphs/task1-3_tower_transfer_3.json": "363d275f4797fa7e4b4d4e47e60bf6df23f49be396ffc26322a12973c6c00d86",
+  "graphs/task2-2_cross_tower_transfer_2.json": "09d5d902c86ac6c10c3f2ce7ed0db819fd6a9d175e3e9b410d74c325b2c6abff",
+  "graphs/task2-3_cross_tower_transfer_3.json": "d8c64f1ab7a722d2812a072e7aaf2e3f1b8241da3d8dfdaeaee472a405d8ce74",
+  "graphs/task3-2_vertical_stacking_2.json": "719608b875733463c53c7ef68944597a17a3d37cd3312dfb5c50f6c56c5ebb49",
+  "graphs/task3-3_vertical_stacking_3.json": "e8acf22124844f2967a4b4a039489c6d3179167ae87d658f720d61edef5bfce1",
+  "graphs/task4-2_full_tower_pushdown_2.json": "6f2fdffc2dcf3233ce5a808d40ba12d0f685ff2262726679a6390db7e117f876",
+  "graphs/task4-3_full_tower_pushdown_3.json": "0f5eaa7748e24317a81bad9cea562190548171af58e08d0ccf37f8bcd531fe0a",
+  "graphs/task5-2_tower_insertion_2.json": "7b777c8a90c83cadce50868d2c13494bc495c70d068870feb94cd8b6c81815b1",
+  "graphs/task5-3_tower_insertion_3.json": "4bef95a1ea1dabbacfd2294f89f1b4d9741b862b95c2d6393093fff39a14611d",
+  "skills/grasp_lift_back.json": "24762593808d38f46967ac31fbd5f501cec4e03c30a2e9219fa72e2b56abe4ef",
+  "skills/grasp_lift_back.pt": "4e09cb40f4e4fc3ae2e688dd570b0526880c0f752d961d16a23f89d8923c7cad",
+  "skills/grasp_lift_left.json": "cfe1f2480d6503d7d44fe8c870031ef9f9a41c81147211f30de8e287350049da",
+  "skills/grasp_lift_left.pt": "06cf62c0add99ebdf6c1647a15c37ae8be9586e45c832cf2239071bce1ad56b1",
+  "skills/place_release_back.json": "625a8f44095f3cb2ea3c7f8fbc065fe3a539d215806e9c07cc353532a104e75b",
+  "skills/place_release_back.pt": "54ba987efcde2f653bafca8bba7a14459227c0e47226d13f9e6c92e86ecb25c8",
+  "skills/place_release_left.json": "31ad159fcfa5ef9714a2b00588ce9240fb0ea4730721ad5301431626356d5e3f",
+  "skills/place_release_left.pt": "94665db81f9c513864b60c5c31c40762d6cc4ca88864415c06088e6c4c72fba3",
+  "skills/push_back.json": "fd1b332a752109b5e62731ee9df0188988cc5a547ece65b02bb0a92fea7d49fc",
+  "skills/push_back.pt": "7321642cb99ef0a534e2259d056bbd9906cb8ba3f00eee4ab3ba1d57498ca073",
+  "skills/push_left.json": "d52183fced6f8cccf4de0a204d6c7fa39d58319249461e1ea1cedba22f6c6518",
+  "skills/push_left.pt": "6d6db833ff2b992618c659933e64a8bb15505b93c109d6a02f9c1d364bd242e4"
+ }
+}

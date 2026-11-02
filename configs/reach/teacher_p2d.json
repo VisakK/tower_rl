@@ -1,0 +1,5 @@
+{"reach": {"mode": "learned",
+           "policy": {"left": "results/reach/export/reach_left_p2d_left8700.pt",
+                      "back": "results/reach/export/reach_back_p2d_back8200.pt"},
+           "held": "learned", "v_held": {"left": 0.05, "back": 0.15},
+           "finish_rows": 8, "finish_mode": "ik", "finish_chunk": true}}

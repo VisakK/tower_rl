@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,7 +39,7 @@ from tower_rl.grasp import grasp_relation_error, gripper_cfg
 from tower_rl.postures import prior_for_pose
 from tower_rl.skills.obs import grasp_lift_actor_obs, grasp_target_world, place_release_actor_obs, push_actor_obs
 from tower_rl.skills.task5_obs import insert_actor_obs, pad_actions
-from tower_rl.skills.transit import TransitCfg, TransitPlan, arrived, plan_waypoints
+from tower_rl.skills.transit import TransitCfg, TransitPlan, _smoothstep, arrived, plan_waypoints
 from tower_rl.tower import rest_heights
 
 ROW_DT = 0.1
@@ -54,18 +55,22 @@ class ExecCfg:
     grasp_skill_steps: int = 150
     held_width: tuple = (0.044, 0.056)   # measured opening when a block is in the closed gripper
     log: list = field(default_factory=list)
+    bundle: str | None = None             # from_bundle's dir: relative graph file paths (reach.policy) resolve here first
 
 
 class SkillPolicy:
     """A frozen actor: observation -> action (deterministic mean), TorchScript or a callable."""
 
-    def __init__(self, fn, device="cpu"):
+    def __init__(self, fn, device="cpu", obs_dim: int | None = None):
         self.fn = fn
         self.device = device
+        self.obs_dim = obs_dim  # from the export's JSON (e.g. 67: a push policy with the seen inputs, Step 9a)
 
     @classmethod
     def load(cls, path: str | Path, device="cpu"):
-        return cls(torch.jit.load(str(path), map_location=device).eval(), device)
+        meta = Path(path).with_suffix(".json")
+        obs_dim = json.loads(meta.read_text()).get("obs_dim") if meta.exists() else None
+        return cls(torch.jit.load(str(path), map_location=device).eval(), device, obs_dim)
 
     @torch.no_grad()
     def __call__(self, obs: torch.Tensor) -> torch.Tensor:
@@ -79,6 +84,7 @@ class Executor:
         self.skills = skills or {}  # (skill, arm) -> SkillPolicy
         self.cfg = cfg or ExecCfg()
         self.runs: list[EnvRun] = []
+        self.node_hook = None  # student plan Step 9c data collection (opt-in): hook(run, node) -> node
 
     @classmethod
     def from_bundle(cls, bundle: str | None, variant: str, device: str = "cpu", rate_hz: int = 10) -> Executor:
@@ -91,7 +97,7 @@ class Executor:
             for f in (b / "skills").glob("*.pt"):  # <skill>_<arm>.pt (TorchScript actor with normalizer)
                 skill, arm = f.stem.rsplit("_", 1)
                 skills[(skill, arm)] = SkillPolicy.load(f, device)
-        return cls(variant, graph, skills, ExecCfg(device=device, rate_hz=rate_hz))
+        return cls(variant, graph, skills, ExecCfg(device=device, rate_hz=rate_hz, bundle=str(bundle) if bundle else None))
 
     def reset(self, n_envs: int, variant: str, seeds: list[int]):
         assert variant == self.variant
@@ -103,6 +109,20 @@ class Executor:
     def episode_log(self, env: int) -> list:
         """Node events ``(t, node id, status, info)`` of one env's episode (for rehearsal feedback)."""
         return list(self.runs[env].events)
+
+    def node_info(self, env: int) -> dict:
+        """The graph node the env's pointer is on (skill, node id, block), {} past the end (perception logs)."""
+        if env >= len(self.runs):
+            return {}
+        run = self.runs[env]
+        if run.i >= len(run.g["nodes"]):
+            return {}
+        nd = run.g["nodes"][run.i]
+        return {"skill": nd.get("skill"), "node": nd.get("id"), "block": nd.get("block")}
+
+    def focus_block(self, env: int) -> str | None:
+        """The block the pointer's node acts on (the pose estimator's focus), or None."""
+        return self.node_info(env).get("block")
 
 
 # ---------------------------------------------------------------------- per-env interpreter
@@ -257,7 +277,12 @@ class EnvRun:
         x, y = gi["pos"][0], gi["pos"][1]
         z = torch.tensor(node["goal_z"], device=self.dev) if "goal_z" in node else self.rz[node["dest_layer"]]
         pos = torch.stack([center[0] + c * x - sn * y, center[1] + sn * x + c * y, z])
-        q = geo.quat_from_yaw(torch.tensor(nominal_yaw + orient + math.radians(gi["yaw_deg"]), device=self.dev))
+        yaw = nominal_yaw + orient + math.radians(gi["yaw_deg"])
+        inj = node.get("inject") or {}
+        if "goal_shift" in inj or "goal_yaw_deg" in inj:  # student data collection (opt-in): a deliberate misplacement
+            pos = pos + torch.tensor(inj.get("goal_shift", [0.0, 0.0, 0.0]), dtype=pos.dtype, device=self.dev)
+            yaw += math.radians(inj.get("goal_yaw_deg", 0.0))
+        q = geo.quat_from_yaw(torch.tensor(yaw, device=self.dev))
         return pos[None], q[None]
 
     def slot_pose(self, s: State, node: dict):
@@ -277,6 +302,9 @@ class EnvRun:
         ax = torch.tensor([[math.cos(ya), math.sin(ya), 0.0]], device=self.dev)
         if float((ax * d).sum()) < 0:
             ax = -ax
+        inj = node.get("inject") or {}
+        if "slot_shift" in inj:  # student data collection (opt-in): an entry offset across / below the slot
+            c = c + torch.tensor([inj["slot_shift"]], dtype=c.dtype, device=self.dev)
         return c, geo.quat_from_yaw(torch.tensor([ya], device=self.dev)), ax
 
     # ------------------------------------------------------------------ main loop
@@ -448,9 +476,23 @@ def _align_quat(q: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
 
 
 def make_node(run: EnvRun, spec: dict, s: State):
+    if spec["skill"] in ("grasp_lift", "insert", "push_in") and spec.get("distilled", run.g.get("distilled", False)):
+        # student plan Step 9c (opt-in): the distilled Task 5 networks (skills/<skill>_bc_<arm>.pt) when the bundle has them
+        from tower_rl.student.distill.nodes import make_distilled
+
+        node = make_distilled(run, spec, s)
+        if node is not None:
+            return node
+    node = _make_node(run, spec, s)
+    hook = getattr(run.ex, "node_hook", None)
+    return node if hook is None else hook(run, node)
+
+
+def _make_node(run: EnvRun, spec: dict, s: State):
     sk = spec["skill"]
     if sk == "transit":
-        return TransitNode(run, spec, s)
+        pol = reach_policy(run, spec["arm"]) if (run.g.get("reach") or {}).get("mode") == "learned" else None
+        return LearnedTransitNode(run, spec, s, pol) if pol is not None else TransitNode(run, spec, s)
     if sk == "park":
         return ParkNode(run, spec, s)
     if sk == "grasp_lift":
@@ -462,6 +504,16 @@ def make_node(run: EnvRun, spec: dict, s: State):
         return LearnedGraspNode(run, spec, s, pol) if pol is not None else PlannedGraspNode(run, spec, s)
     if sk == "place_release":
         pol = run.ex.skills.get(("place_release", spec["arm"]))
+        # graph "offcentre_place": {"min_mm": m}: a block held >= m mm off-centre along its length gets the planned place
+        # (slow descent to the offset-compensated release pose, open there): official v1.2 places after such grips
+        # failed 7 / 12 (the learned place let go 2-8 cm up, or the block slid), others 1 / 110 (Studentv1_3_plan §1)
+        oc = run.g.get("offcentre_place")
+        if pol is not None and oc:
+            along = held_along_mm(run, s, spec["arm"], spec["block"])
+            if along is not None and abs(along) >= float(oc.get("min_mm", 4.0)):
+                node = PlannedPlaceNode(run, spec, s)
+                node.offcentre = True
+                return node
         return LearnedPlaceNode(run, spec, s, pol) if pol is not None else PlannedPlaceNode(run, spec, s)
     if sk == "push":
         pol = run.ex.skills.get(("push", spec["arm"]))
@@ -525,6 +577,11 @@ class TransitNode(NodeBase):
             pp, pq = release_pose(r, arm, gp, gq, place.get("release_clearance_m", grasp_cfg()["release_clearance_m"]))
             r.release_target[arm] = (pp, pq)
             self.goal = above(pp, pq, spec["height_m"])
+        inj = spec.get("inject") or {}
+        if "target_shift" in inj and spec["target"] in ("pregrasp", "prepush"):  # student data collection (opt-in)
+            self.goal = (self.goal[0] + torch.tensor([inj["target_shift"]], dtype=self.goal[0].dtype, device=r.dev), self.goal[1])
+        self.drop_at = inj.get("drop_after_rows") if held else None  # student data collection: open 0.3 s, re-close
+        self.rows_out = 0
         self.goal, adj = reachable_pose(ctrl, *self.goal, ctrl.q_ref)
         if adj:
             self.info_adjust = adj
@@ -566,6 +623,10 @@ class TransitNode(NodeBase):
             for k in range(h):
                 r.ctrl[arm].set_target(ps[k:k + 1], qs[k:k + 1])
                 r.command(arm, payload=self.payload)
+                if self.drop_at is not None:
+                    self.rows_out += 1
+                    if self.rows_out >= self.drop_at:
+                        r.grip[arm].step(torch.tensor([self.rows_out >= self.drop_at + 3], device=r.dev))
                 rows.append(r.row())
             return None, rows
         pp, pq = r.pinch(s, arm)
@@ -579,6 +640,252 @@ class TransitNode(NodeBase):
         self.wait += 1
         r.command(arm, payload=self.payload)
         return None, [r.row()]
+
+
+REACH_DEFAULTS = {"v_held": 0.15, "v_empty": 0.4, "a": 0.6, "w": 1.0, "via_margin": 0.03, "via_rise": 0.05,
+                  "via_cap": 0.33, "via_tol": [0.01, 20.0], "via_stall_s": 0.0, "max_turn_deg": 90.0,
+                  "settle": {"pos_m": 0.005, "rot_deg": 2.0, "qd": 0.05, "rows": 3}, "graph_tol_after_s": 3.0,
+                  "q_des_from": "meas", "finish_rows": 0, "held": "learned", "driver": "reacher",
+                  "finish_mode": "joint", "chunk": 1, "chunk_held": 1, "finish_chunk": False}
+
+
+def reach_policy(run: EnvRun, arm: str):
+    """The learned reacher for ``arm`` (graph ``reach.policy.<arm>``: an export of ``tower_rl.skills.export``, its JSON
+    beside it), loaded once per executor; None without one. A relative path is the bundle's file when the bundle has it
+    (student_v1_4: ``reach/<export>.pt``), else relative to the working directory (``--graph_set @configs/reach/...``)."""
+    ex = run.ex
+    cache = ex.__dict__.setdefault("_reach", {})
+    if arm not in cache:
+        path = ((run.g.get("reach") or {}).get("policy") or {}).get(arm)
+        cache[arm] = None
+        if path:
+            if ex.cfg.bundle and not Path(path).is_absolute() and (Path(ex.cfg.bundle) / path).is_file():
+                path = Path(ex.cfg.bundle) / path
+            meta = json.loads(Path(path).with_suffix(".json").read_text())
+            cache[arm] = (SkillPolicy.load(path, ex.cfg.device), meta["skill"])
+    return cache[arm]
+
+
+class LearnedTransitNode(TransitNode):
+    """Graph ``reach.mode: learned`` (Reach-PPO-plan.MD P4): the same goal as ``TransitNode``, reached by the learned
+    reacher (``tower_rl.skills.reach_policy``) closed loop, one row per call, through via-points (above the start,
+    above the goal at a travel height over the tallest block estimate, the goal: ``reach_tasks.via_points``) with a
+    moving goal (``reach_tasks.Carrot``) at ``v_held`` / ``v_empty`` m/s. The next via-point goes in when the pinch is
+    within ``via_tol`` of the current one. Arrival: the carrot on the goal and the pinch still (|qd| < ``settle.qd``)
+    for ``settle.rows`` rows within ``settle`` (the reacher's training settle test), or within the graph's tolerance
+    ``graph_tol_after_s`` after the carrot arrived; then ``finish_rows`` rows (0: none) into the configuration the
+    planned transit ends in: ``finish_mode: joint`` interpolates the joints to the IK solution at the goal biased to
+    the next skill's posture prior (``ctrl.q_ref``), ``ik`` runs the IK controller on the goal. 10-31, Task 4-3: the
+    reacher parks ~1-1.5 deg off the pre-push pose with the elbow 0.04-0.1 rad (joints 1 / 3) from where the planned
+    transit's IK puts it; the push skill was trained from IK starts. Goals more than ``max_turn_deg`` from the start orientation keep
+    the planned transit (the reacher fails on > 90 deg turns; 0.5 % of recorded task transits).
+    Held-out recorded task transits (10-31, GPU, left): in band 100 %, held pinch <= 0.17 m/s at v_held 0.15, paths
+    through other blocks 1.9 % (planned transit 1.6 %), arrival p50 2.9 s (planned 5.7 s)."""
+
+    def __init__(self, run, spec, s, pol):
+        super().__init__(run, spec, s)
+        from tower_rl.skills.reach_policy import Reacher
+        from tower_rl.skills.reach_tasks import Carrot, structure_top, via_points
+
+        r, arm = run, self.arm
+        assert r.ex.cfg.rate_hz == 10, "the reacher was trained on 10 Hz rows"
+        rc = {**REACH_DEFAULTS, **(r.g.get("reach") or {})}
+        self.rc = rc
+        pp, pq = r.pinch(s, arm)
+        turn = math.degrees(float(geo.quat_angle(pq, self.goal[1])[0]))
+        held_mode = rc["held"].get(arm, "learned") if isinstance(rc["held"], dict) else rc["held"]  # or per arm
+        # planned_targets: transit targets that keep the planned transit (e.g. prepush: the push skill was trained from the
+        # IK controller's elbow; learned pre-pushes cost Task 4-2 D0 2 / 8 in the P4 hybrid and in P2d, 10-31)
+        self.learned = turn <= rc["max_turn_deg"] and not self.unreachable and not (self.plan.held and held_mode == "planned") \
+            and spec["target"] not in rc.get("planned_targets", [])
+        self.info_reach = {"reach": "learned" if self.learned else "planned", "turn_deg": round(turn, 1)}
+        if not self.learned:
+            return
+        self.reacher = Reacher(pol[0], arm, pol[1], 1, r.dev)
+        self.reacher.reset(r.q_meas(s, arm))
+        if rc["q_des_from"] == "ctrl":  # keep the command continuous: a heavy block sags the arm below q_des
+            self.reacher.q_des = self.reacher.clamp(r.ctrl[arm].q_des.clone())
+        held = self.plan.held
+        blocks = {b: [float(r.block_rest(s, b)[0][0, 2])] * 3 for b in s.block_ids}  # structure_top reads z only
+        top = torch.tensor([structure_top(blocks, spec["block"] if held else None)], device=r.dev)
+        self.vias, valid = via_points(pp, pq, self.goal[0], self.goal[1], top, torch.tensor([held], device=r.dev),
+                                      margin=rc["via_margin"], rise=rc["via_rise"], cap=rc["via_cap"])
+        self.valid = valid[0].tolist()
+        self.cur = self.valid.index(True)
+        v = rc["v_held"] if held else rc["v_empty"]
+        v = v[arm] if isinstance(v, dict) else v  # or per arm (P2d: the left arm's stiff joint 2 slips blocks above ~0.05 m/s,
+        # the back arm carries heavy blocks at 0.3 m/s without a drop, 10-31)
+        self.car = Carrot(pp, pq, torch.tensor([float(v)], device=r.dev), rc["a"], rc["w"])
+        self.still = 0
+        self.cmd_still = 0  # rows the reacher's q_des has been still (chunk-trained reachers' arrival test)
+        self.slot_rows = 0  # rows the carrot has sat on the current via-point (via_stall_s)
+        self.on_rows = 0
+        self.finish = -1  # rows of the IK finish done (-1: the reacher is still driving)
+
+    def _done(self, s: State, pe: float, re: float):
+        disp = float(np.linalg.norm(self._watched(s) - self.p_watch0, axis=-1).max()) if self.watch else 0.0
+        self.info = {"pos_err_mm": round(pe * 1000, 1), "rot_err_deg": round(re, 2),
+                     "max_block_disp_mm": round(disp * 1000, 2), "t_s": round(float(s.t - self.t0), 2),
+                     **self.info_reach, **getattr(self, "info_adjust", {})}
+        return Status.OK, []
+
+    def _finish_row(self, q):
+        r, arm, ctrl = self.run, self.arm, self.run.ctrl[self.arm]
+        if self.rc["finish_mode"] == "ik":
+            r.command(arm, q_meas=q, payload=self.payload)
+            return
+        a = float(_smoothstep(torch.tensor(self.finish / self.rc["finish_rows"])))
+        ctrl.q_des[:] = self.q_fin0 + a * (self.q_fin - self.q_fin0)
+        lim = ctrl.kin.limits
+        cmd = ctrl.kin.sag_compensated_command(ctrl.q_des, torch.tensor([self.payload], device=r.dev))
+        r._cmd[arm] = torch.max(torch.min(cmd, lim[:, 1]), lim[:, 0])[0]
+
+    def _slot(self):
+        v = self.vias[:, self.cur]
+        return v[:, :3], v[:, 3:]
+
+    def _via_reached(self, pp, pq, sp, sq) -> bool:
+        """The pinch ``pp`` / ``pq`` is done with the current via-point ``sp`` / ``sq`` (never the goal): within ``via_tol``,
+        or within its position part once the carrot has sat there ``via_stall_s`` (> 0). 10-31: a chunk-trained left
+        reacher parked a Task 5-3 held pre-insert 4 mm from its via-point at 20.2 deg, joint 7 at its limit margin; the
+        via-points are for clearance, so the orientation may wait for the descent."""
+        if self.cur >= 2:
+            return False
+        tol_p, tol_r = self.rc["via_tol"]
+        dp = float((pp - sp).norm())
+        if dp > tol_p:
+            return False
+        stall = self.rc.get("via_stall_s", 0.0)
+        return math.degrees(float(geo.quat_angle(pq, sq)[0])) <= tol_r or (stall > 0 and self.slot_rows * ROW_DT >= stall)
+
+    def step(self, s: State):
+        if not self.learned:
+            return super().step(s)
+        r, arm, rc = self.run, self.arm, self.rc
+        if self.timed_out(s):
+            self.info = {**self.info_reach, "via": self.cur}
+            return Status.TIMEOUT, []
+        if self.plan.held and float(s.width[ARMS.index(arm)]) < r.ex.cfg.held_width[0]:
+            self.info = {"why": "dropped", **self.info_reach}
+            return Status.FAILED, []
+        if self.plan.held:
+            r.refresh_attached(s, arm)
+        q = r.q_meas(s, arm)
+        pp, pq = r.pinch(s, arm)
+        pe, re = float((pp - self.goal[0]).norm()), math.degrees(float(geo.quat_angle(pq, self.goal[1])[0]))
+        if self.finish >= 0:  # the finish into the planned transit's end configuration
+            if self.finish >= rc["finish_rows"]:
+                return self._done(s, pe, re)
+            rows = []
+            # finish_chunk: the remaining rows in this call (the IK controller's rows need no measurement: its integral
+            # term is off; the joint finish is a fixed interpolation)
+            for _ in range(rc["finish_rows"] - self.finish if rc.get("finish_chunk") else 1):
+                self.finish += 1
+                self._finish_row(q)
+                rows.append(r.row())
+            return None, rows
+        sp, sq = self._slot()
+        while self._via_reached(pp, pq, sp, sq):
+            self.cur = next(j for j in range(self.cur + 1, 3) if self.valid[j])
+            self.slot_rows = 0
+            sp, sq = self._slot()
+        cp, cq = self.car.p.clone(), self.car.q.clone()
+        on_slot = bool(self.car.step(sp, sq, ROW_DT)[0])
+        self.slot_rows = self.slot_rows + 1 if on_slot else 0
+        on = on_slot and self.cur == 2
+        car_v = torch.cat([(self.car.p - cp) / ROW_DT, geo.quat_error_rotvec(cq, self.car.q) / ROW_DT], -1)  # P2e input
+        st = rc["settle"]
+        k_rows = rc.get("chunk_held", 1) if self.plan.held else rc.get("chunk", 1)
+        k_rows = int(k_rows.get(arm, 1) if isinstance(k_rows, dict) else k_rows)  # or per arm
+        trained = self.reacher.ck_obs and k_rows > 1  # a chunk-trained reacher in chunks (Reacher-V2.MD §7.1)
+        qd = float(((q - self.reacher.prev_q) / ROW_DT).abs().max())
+        self.on_rows = self.on_rows + 1 if on else 0
+        tight = pe <= st["pos_m"] and re <= st["rot_deg"]
+        loose = self.on_rows * ROW_DT >= rc["graph_tol_after_s"] and bool(arrived(pp, pq, *self.goal, self.cfg)[0])
+        if trained:  # one measurement per call: still = q_des unchanged for settle.rows rows, on the measured pose
+            self.still = st["rows"] if on and self.cmd_still >= st["rows"] and (tight or loose) else 0
+        else:
+            self.still = self.still + 1 if on and qd < st["qd"] and (tight or loose) else 0
+        if self.still >= st["rows"]:
+            if rc["finish_rows"] <= 0:
+                return self._done(s, pe, re)
+            ctrl = r.ctrl[arm]
+            ctrl.set_target(*self.goal)
+            gb, qb = ctrl.base.to_base(*self.goal)
+            self.q_fin = ctrl.kin.ik(self.reacher.q_des, gb, qb, iters=80, q_ref=ctrl.q_ref, limit_margin=ctrl.cfg.limit_margin,
+                                     tol_pos=0.0, tol_rot=0.0)[0]
+            self.q_fin0 = self.reacher.q_des.clone()
+            rows = []
+            for _ in range(rc["finish_rows"] if rc.get("finish_chunk") else 1):
+                self.finish = max(self.finish, 0) + 1
+                self._finish_row(q)
+                rows.append(r.row())
+            return None, rows
+        if rc["driver"] == "ik":  # diagnostic: the IK controller follows the same moving goal
+            r.ctrl[arm].set_target(self.car.p, self.car.q)
+            r.command(arm, q_meas=q, payload=self.payload)
+            self.reacher.prev_q = q.clone()
+            return None, [r.row()]
+        # P2d models also see the measured finger opening and the finger regime (Task 4/5 graphs: the 3 N fingers)
+        width, regime = float(s.width[ARMS.index(arm)]), float("gripper_closed_width" in r.g)
+        rows = [self._reacher_row(q, car_v, width, regime)]
+        # reach.chunk > 1 (Reach-PPO-plan.MD §2.6): more rows in this call on the reacher's own prediction of the joints.
+        # A chunk-trained reacher (the env's chunk.obs) chunks to the goal (_trained_chunk). Models trained closed loop:
+        # on q_des (which the arm settles on) while the moving goal travels; once it sits on its via-point or goal the
+        # reacher converges closed loop, and via-points switch on measured poses only. The prediction knows no sag or
+        # joint friction: chunking into a via-point stalled the back arm short of it (10-31, Task 1-3: TSR 0 / 16).
+        # Held transits use chunk_held (default 1): open-loop rows made the P2d reacher carry at ~2x the moving goal's
+        # speed and drop heavy blocks (10-31: left 158-160 / 164 at 0.05 m/s, back 3-16 / 208 at 0.15; closed loop 0)
+        if trained:
+            rows += self._trained_chunk(k_rows - 1, sp, sq, on, width, regime)
+        for _ in range(0 if trained else k_rows - 1):
+            if on_slot:
+                break
+            qp = self.reacher.q_des.clone()
+            cp, cq = self.car.p.clone(), self.car.q.clone()
+            on_slot = bool(self.car.step(sp, sq, ROW_DT)[0])
+            self.slot_rows = self.slot_rows + 1 if on_slot else 0
+            car_v = torch.cat([(self.car.p - cp) / ROW_DT, geo.quat_error_rotvec(cq, self.car.q) / ROW_DT], -1)
+            rows.append(self._reacher_row(qp, car_v, width, regime))
+        ctrl = r.ctrl[arm]  # the next node's IK starts from the reacher's target
+        ctrl.q_des[:] = self.reacher.q_des
+        ctrl.set_target(*ctrl.pinch_world(ctrl.q_des))
+        ctrl.i_pos.zero_()
+        ctrl.i_rot.zero_()
+        return None, rows
+
+    def _reacher_row(self, q, car_v, width: float, regime: float):
+        """One reacher row on measured joints ``q`` (None: a row inside a chunk, on the reacher's prediction)."""
+        r, arm = self.run, self.arm
+        q_des0 = self.reacher.q_des.clone()
+        r._cmd[arm] = self.reacher.step(q, self.car.p, self.car.q, self.payload, width=width, regime=regime, goal_v_w=car_v)[0]
+        still = float((self.reacher.q_des - q_des0).abs().max()) / ROW_DT < self.rc["settle"]["qd"]
+        self.cmd_still = self.cmd_still + 1 if still else 0
+        return r.row()
+
+    def _trained_chunk(self, n_rows: int, sp, sq, on: bool, width: float, regime: float) -> list:
+        """Up to ``n_rows`` more rows in this call for a chunk-trained reacher, on its own prediction of the joints (the
+        env's ``chunk``): via-points switch on the predicted pinch pose; the chunk ends early once the carrot is on the
+        goal, q_des still for ``settle.rows`` rows and the predicted pinch within ``settle`` (the next call measures)."""
+        st, rows = self.rc["settle"], []
+        for _ in range(n_rows):
+            pp, pq = self.reacher.base.to_world(*self.reacher.kin.fk(self.reacher.predicted(), "pinch"))
+            pe = float((pp - self.goal[0]).norm())
+            re = math.degrees(float(geo.quat_angle(pq, self.goal[1])[0]))
+            if on and self.cmd_still >= st["rows"] and pe <= st["pos_m"] and re <= st["rot_deg"]:
+                break
+            while self._via_reached(pp, pq, sp, sq):
+                self.cur = next(j for j in range(self.cur + 1, 3) if self.valid[j])
+                self.slot_rows = 0
+                sp, sq = self._slot()
+            cp, cq = self.car.p.clone(), self.car.q.clone()
+            on_slot = bool(self.car.step(sp, sq, ROW_DT)[0])
+            self.slot_rows = self.slot_rows + 1 if on_slot else 0
+            on = on_slot and self.cur == 2
+            self.on_rows = self.on_rows + 1 if on else 0
+            car_v = torch.cat([(self.car.p - cp) / ROW_DT, geo.quat_error_rotvec(cq, self.car.q) / ROW_DT], -1)
+            rows.append(self._reacher_row(None, car_v, width, regime))
+        return rows
 
 
 def grasp_cfg_payload() -> float:
@@ -730,6 +1037,8 @@ class PlannedGraspNode(NodeBase):
                             self.z0 + self.spec["lift_m"] + 0.02)
             ctrl.set_target(tgt, ctrl.quat)
         closed = self.phase >= 1
+        if self.phase == 2:
+            closed = bool(_inject_drop(self, torch.tensor([closed], device=r.dev), float(bp[0, 2]) - self.z0)[0])
         r.grip[arm].step(torch.tensor([closed], device=r.dev))
         r.command(arm, r.q_meas(s, arm), payload=grasp_cfg_payload() if self.phase == 2 else 0.0)
         if self.phase == 2:
@@ -790,11 +1099,16 @@ class LearnedGraspNode(NodeBase):
         else:  # the grip may still settle (fingers sliding on the faces); refresh_attached confirms larger shifts
             r.refresh_attached(s, arm)
         bp, bq = r.block_est(s, self.spec["block"])
-        tpb, tqb = base.to_base(bp, bq)
-        gpw, gqw = grasp_target_world(bp, bq, arm)
+        bpo = bp
+        along = (self.spec.get("inject") or {}).get("grasp_along")
+        if along:  # student data collection (opt-in): the policy sees the block this far along its length, so it grips
+            # off-centre for real; the attach (rest estimate) and the lift test keep the true pose
+            bpo = bp + float(along) * geo.quat_apply(bq, torch.tensor([[1.0, 0.0, 0.0]], device=r.dev))
+        tpb, tqb = base.to_base(bpo, bq)
+        gpw, gqw = grasp_target_world(bpo, bq, arm)
         gpb, gqb = base.to_base(gpw, gqw)
         _, ops, oqs = self._others(s)
-        near = (ops[0, :, :2] - bp[0, :2]).norm(dim=-1) < 0.2  # blocks of the same tower (as in training)
+        near = (ops[0, :, :2] - bpo[0, :2]).norm(dim=-1) < 0.2  # blocks of the same tower (as in training)
         opb, oqb = base.to_base(ops, oqs)
         tgt_pb, tgt_qb = base.to_base(ctrl.pos, ctrl.quat)
         w = torch.tensor([float(s.width[ARMS.index(arm)])], device=r.dev)
@@ -802,7 +1116,7 @@ class LearnedGraspNode(NodeBase):
             pb=pb, qb=qb, prev_pb=self.prev_pb, prev_qb=self.prev_qb, dt=ROW_DT, tgt_pb=tgt_pb, tgt_qb=tgt_qb, width=w,
             closed=r.grip[arm].closed, width_cmd=r.grip[arm].width, target_pb=tpb, target_qb=tqb, grasp_pb=gpb, grasp_qb=gqb,
             other_pb=opb, other_qb=oqb, other_valid=near[None],
-            target_z_world=bp[:, 2], target_z0_world=torch.tensor([self.z0], device=r.dev), prev_actions=self.prev_a,
+            target_z_world=bpo[:, 2], target_z0_world=torch.tensor([self.z0], device=r.dev), prev_actions=self.prev_a,
             progress=torch.tensor([self.steps / self.max_steps], device=r.dev))
         self.prev_pb, self.prev_qb = pb, qb
         a = self.pol(obs).clamp(-1, 1)
@@ -814,6 +1128,7 @@ class LearnedGraspNode(NodeBase):
                          q_meas=qm, max_lead=self.ac["max_lead_m"])
         close = a[:, 6] > self.ac.get("grip_threshold", 0.0)
         lifted_now = float(bp[0, 2]) - self.z0
+        close = _inject_drop(self, close, lifted_now)
         payload = grasp_cfg_payload() if (bool(close) and self.ever_lifted) else 0.0
         r.command(arm, qm, payload=payload)
         r.grip[arm].step(close)
@@ -832,6 +1147,19 @@ class LearnedGraspNode(NodeBase):
         return None, [r.row()]
 
 
+def _inject_drop(node: NodeBase, close: torch.Tensor, lifted: float) -> torch.Tensor:
+    """Student data collection (opt-in, ``spec["inject"]["drop_at_lift_m"]``): open the fingers for 3 rows once the
+    block has risen that far, a drop near the source; the node's own checks then see it."""
+    at = (node.spec.get("inject") or {}).get("drop_at_lift_m")
+    if at is None:
+        return close
+    k = getattr(node, "_drop_rows", 0)
+    if k < 3 and (k > 0 or lifted >= at):
+        node._drop_rows = k + 1
+        return torch.zeros_like(close)
+    return close
+
+
 def record_held_offset(r: EnvRun, s: State, arm: str, bid: str) -> dict:
     """Store the held block's pose in the pinch frame (used by the place); returns the grasp quality for the node's
     info (``tower_rl.grasp.grasp_relation_error``): pinch offset from the canonical grasp in the block frame (mm; x
@@ -842,6 +1170,23 @@ def record_held_offset(r: EnvRun, s: State, arm: str, bid: str) -> dict:
     r.held_offset[arm] = att[1] if att is not None and att[0] == bid else geo.frame_relative(pp, pq, bp, bq)
     d, rot = grasp_relation_error(bp, bq, pp, pq, arm)
     return {"grasp_offset_mm": [round(float(v) * 1000, 1) for v in d[0]], "grasp_rot_deg": round(math.degrees(float(rot[0])), 1)}
+
+
+def held_along_mm(run: EnvRun, s: State, arm: str, bid: str) -> float | None:
+    """The pinch's offset from the canonical grasp along the held block's length (mm, block frame x; the
+    ``grasp_offset_mm`` x of the grasp), or None when the arm holds no attached block ``bid``."""
+    att = run.attached[arm]
+    if att is None or att[0] != bid:
+        return None
+    pp, pq = run.pinch(s, arm)
+    bp, bq = run.block_est(s, bid)
+    d, _ = grasp_relation_error(bp, bq, pp, pq, arm)
+    return round(float(d[0, 0]) * 1000, 1)
+
+
+def _above_goal_mm(run: EnvRun, s: State, bid: str, goal_pos) -> float:
+    """Height of the block's centre above its goal centre (mm): at the release, how far the block will drop."""
+    return round((float(run.block_est(s, bid)[0][0, 2]) - float(goal_pos[0, 2])) * 1000, 1)
 
 
 class PlannedPlaceNode(NodeBase):
@@ -856,6 +1201,9 @@ class PlannedPlaceNode(NodeBase):
         self.phase = 0
         self.k = 0
         self.post = PoseWindow()  # perceived poses of the block since the gripper opened
+        self.offcentre = False  # set by the factory: the graph's "offcentre_place" chose this node
+        self.grip_along_mm = held_along_mm(run, s, self.arm, spec["block"])
+        self.release_above_mm = None
 
     def step(self, s):
         r, arm = self.run, self.arm
@@ -885,6 +1233,8 @@ class PlannedPlaceNode(NodeBase):
                 self.phase, self.k = 1, 0
                 return self.step(s)  # open in this same row (no extra row when the hold is 0)
         elif self.phase == 1:  # open and wait 0.6 s
+            if self.release_above_mm is None:
+                self.release_above_mm = _above_goal_mm(r, s, self.spec["block"], self.goal[0])
             close = False
             payload = 0.0
             r.detach(arm)
@@ -907,10 +1257,14 @@ class PlannedPlaceNode(NodeBase):
             if self.k * ROW_DT >= self.spec["settle_s"]:
                 # the median of the last second's perceived poses (a single noisy pose misjudges good places)
                 bp, bq = self.post.median(round(1.0 / ROW_DT)) if len(self.post) else s.block(self.spec["block"])
-                dxy, _, dyaw = ck.placement_error(bp, bq, *(x[0].cpu().numpy() for x in self.goal))
+                dxy, dz, dyaw = ck.placement_error(bp, bq, *(x[0].cpu().numpy() for x in self.goal))
                 r.held_offset[arm] = None
                 self.info = {"place_xy_mm": round(dxy * 1000, 2), "yaw_deg": round(dyaw, 2)}
                 ok = dxy <= self.spec["tol_pos_m"] and dyaw <= self.spec["tol_yaw_deg"]
+                if self.offcentre:  # standing in for the learned place: its verdict (height too) and its log fields
+                    ok = ok and dz <= load_yaml("skills/place_release")["place"]["tol_z_m"]
+                    self.info.update({"offcentre": True, "grip_along_mm": self.grip_along_mm,
+                                      "release_above_mm": self.release_above_mm})
                 return (Status.OK if ok else Status.FAILED), []
         r.grip[arm].step(torch.tensor([close], device=r.dev))
         r.command(arm, qm, payload=payload)
@@ -937,6 +1291,8 @@ class LearnedPlaceNode(NodeBase):
         self.since = 0
         self.post = PoseWindow()  # perceived poses of the block since the release
         self.steps = 0
+        self.grip_along_mm = held_along_mm(run, s, self.arm, spec["block"])
+        self.release_above_mm = None  # the block's centre above its goal centre when the policy opened
 
     def step(self, s):
         r, arm = self.run, self.arm
@@ -966,7 +1322,8 @@ class LearnedPlaceNode(NodeBase):
                 dxy, dz, dyaw = ck.placement_error(p, q, *(x[0].cpu().numpy() for x in (gp, gq)))
                 in_tol = dxy <= self.spec["tol_pos_m"] and dyaw <= self.spec["tol_yaw_deg"] and dz <= self.pl["tol_z_m"]
                 r.held_offset[arm] = None
-                self.info = {"place_xy_mm": round(dxy * 1000, 2), "yaw_deg": round(dyaw, 2), "steps": self.steps}
+                self.info = {"place_xy_mm": round(dxy * 1000, 2), "yaw_deg": round(dyaw, 2), "steps": self.steps,
+                             "grip_along_mm": self.grip_along_mm, "release_above_mm": self.release_above_mm}
                 return (Status.OK if in_tol else Status.FAILED), []
         att = r.attached[arm]
         w_jaw = r.g.get("perception", {}).get("jaw_to_goal", 0.0)
@@ -1007,6 +1364,7 @@ class LearnedPlaceNode(NodeBase):
         close = a[:, 6] > self.ac.get("grip_threshold", 0.0)
         if not self.released and not bool(close):
             self.released, self.z_release = True, float(pw[0, 2])
+            self.release_above_mm = round((float(bp[0, 2]) - float(gp[0, 2])) * 1000, 1)
             r.detach(arm)
         # payload from the gripper state before this row, as in training (PlaceReleaseEnv._payload_kg)
         r.command(arm, qm, payload=grasp_cfg_payload() if bool(r.grip[arm].closed) else 0.0)
@@ -1018,12 +1376,62 @@ class LearnedPlaceNode(NodeBase):
         return None, [r.row()]
 
 
+PUSH_SETTLE = {  # graph "push_settle" (opt-in, Plan-v1.1 §3.1 "Plus"): true or a dict overriding these
+    "clear_m": 0.002,           # departed: the block's hull >= this far outside the foundation footprint (tower_rl.eval.mirror)
+    "confirm_calls": 5,         # ... on this many consecutive confident calls with the block at rest
+    "rest_speed": 0.02,         # m/s between confident calls
+    "over_calls": 3,            # seen over the footprint this many calls after the radial test: finish with the planned push
+    "speed_m": 0.008,           # planned push per row (v1's stalled-block hand-over)
+    "max_push_m": 0.12,         # the planned finish stops (holds) after the pinch went this far from where it started
+    "handover_along_m": None,   # (variant) hand over to the planned push this far along, before any departure test
+    "accept_rows": 40,          # not confirmed this long after the radial test: end as v1 would have (flagged "unconfirmed")
+    "follow": {},               # {"<variant>/<layer>": m}: after the radial test, keep pushing straight until the pinch went
+                                # this far along from the node's start (the demos' 0.25 m stroke on 4-3's top layer: its
+                                # blocks then stand on end and topple outward, clear of where the bottom layer lands)
+    "follow_speed_m": 0.012,    # per row during the follow-through
+    "follow_raise_m": 0.0,      # (variant) the pinch this much higher during the follow-through (clear of the top layer)
+    "edge_slow": None,          # (variant) {"along_m": a, "scale": f}: the learned push's translation x f once the block is
+                                # a out (the demos push layer 2 at ~40 mm/s, ours ~120 mm/s; blocks tip onto their side)
+    "extra_timeout_s": 6.0,
+    "extra_steps": 40,
+}
+
+REPUSH_V2 = {  # graph "repush_v2" (opt-in, the recovery node's re-push only): true or a dict overriding these
+    # camera loop 2026-10-28: a re-push starts on a block that is already out, so the radial test fired on its first row
+    # and the per-row estimate (3-5 mm clear at the base edge) confirmed it at once: 4 / 4 re-pushes in 4-2 ended
+    # after 4 rows with along 0 mm, the block still leaning (R4.1 had judged it on the rest estimates)
+    "min_push_m": 0.04,     # the planned push runs this far past its contact pose before any departure test or confirmation
+    "near_m": 0.03,         # confirmed only "flat clear" (tower_rl.eval.mirror.rest_state); not flat within this of the
+                            # footprint counts as still over it (finished by the planned push)
+    "max_total_m": 0.15,    # no further finishing once the pinch went this far past its contact pose
+    # (and on rows where the block is not seen, the re-push acts on its last confident pose: camera loop 2026-10-28, the
+    # estimator had coasted the leaning block 145 mm back towards the tower and the re-push aimed behind that pose)
+}
+
+
 class PushNode(NodeBase):
     """Task 4 push: the learned push actor (``push_env``: same observation and action processing) or, without a
     policy, a planned straight push (pipeline tests). The node ends once the target has left the tower (perceived pose,
     the evaluator-side rule) with a planned retreat upward; it fails when the rest of the tower moved (rest estimates
     beyond ``structure_mm``: the remaining tower is the "required structure"), on a sideways shove, or at the timeout.
-    The fingers stay closed into the pusher tool throughout."""
+    The fingers stay closed into the pusher tool throughout.
+
+    Graph ``push_settle`` (opt-in; official run 1: the radial departure test fired while side-row blocks still overhung
+    the foundation, and the official check judges where pushed blocks come to rest): the push runs as before until the
+    radial test fires; then it holds still, and the node ends (retreat) once the block's perceived hull is ``clear_m``
+    outside the foundation footprint on ``confirm_calls`` consecutive confident calls with the block at rest. A block
+    seen still over the footprint (``over_calls``) is finished by the planned straight push (the stalled-block hand-over
+    path, along the block's line, ``speed_m`` per row) until it is clear. A first version that handed every push over
+    to a slow planned push at 60 mm dropped blocks onto the base and dragged neighbours (D0 smoke, 2026-10-27).
+
+    The recovery node's re-push (spec ``recover``) is this settle push, planned; graph ``repush_v2`` (opt-in,
+    ``REPUSH_V2``) makes it push a minimum stroke before any test and confirm the block only "flat clear".
+
+    Graph ``depart_seen`` (opt-in; camera loop 2026-10-28): the departure test counts only rows where the target is
+    seen (confidence >= ``CONF_MIN``). The estimator coasts a block it lost while moving (up to ~0.15 m on), and the test
+    fired on that coasted pose while the block had stopped leaning on the base edge (4-2: 10 of the 12 blocks left
+    leaning). The learned push was trained to push on through such losses (its episodes end on the true departure); a
+    target lost for long after it was last seen well out still ends the push (``lost_departed``)."""
 
     def __init__(self, run, spec, s, policy: SkillPolicy | None = None):
         super().__init__(run, spec, s)
@@ -1033,11 +1441,22 @@ class PushNode(NodeBase):
         self.lat_fail = sk["push"]["lateral_fail_m"]
         self.max_steps = sk["episode_steps"]
         r = run
+        ps = r.g.get("push_settle", False)
+        rv = False
+        if spec.get("recover"):  # the recovery node's re-push (Plan-v1.1 §5): planned, confirmed clear of the footprint
+            self.pol = None
+            ps = ps or True
+            rv = r.g.get("repush_v2", False)
+        self.ps = dict(PUSH_SETTLE, **(ps if isinstance(ps, dict) else {})) if ps else None
+        self.rv = dict(REPUSH_V2, **(rv if isinstance(rv, dict) else {})) if rv else None
+        self.stroke0 = None  # repush_v2: the commanded pinch where the planned push reached its contact pose
+        self.depart_seen = bool(r.g.get("depart_seen", False))
         self.dir = torch.tensor([spec["direction"]], dtype=torch.float32, device=r.dev)
         self.layer = spec["layer"]
         self.zoff = push_geo.z_offset(self.arm, self.layer)
         bp, bq = r.block_rest(s, spec["block"])
         self.p0, self.yaw0, self.z0 = bp.clone(), geo.yaw_from_quat(bq).clone(), float(bp[0, 2])
+        self.seen_pose = (bp.clone(), bq.clone())  # repush_v2: the target's last confident pose (the rest estimate first)
         self.tower_xy = torch.stack([r.block_rest(s, b)[0][0, :2] for b in r.g["tower"]["foundation"]]).mean(0)[None]
         # the rest of the tower: movable blocks still on it (within 0.12 m of its axis), the target excluded
         self.watch = [b for b in r.g["movable"] if b != spec["block"]
@@ -1052,6 +1471,20 @@ class PushNode(NodeBase):
         self.handover, self.static_rows, self.prev_bp = False, 0, None  # learned -> planned hand-over (stalled block)
         self.lost_rows, self.last_along = 0, 0.0  # rows the target has not been seen (perceived confidence < CONF_MIN)
         r.grip[self.arm].reset(width=self.pg["tool_width_m"], closed=True)
+        if self.ps is not None:  # push_settle: the foundation footprint (rest estimates), more time for the slow push
+            from tower_rl.eval.mirror import footprint_frame
+
+            fd = [r.block_rest(s, b) for b in r.g["tower"]["foundation"]]
+            self.foot = footprint_frame(np.stack([p[0].cpu().numpy() for p, _ in fd]),
+                                        np.stack([q[0].cpu().numpy() for _, q in fd]))
+            self.spec = dict(spec, timeout_s=spec["timeout_s"] + self.ps["extra_timeout_s"])
+            self.max_steps += self.ps["extra_steps"]
+            self.departing, self.hold, self.clear_n, self.over_n, self.seen_clear = False, False, 0, 0, False
+            self.line0, self.prev_seen = None, None  # the planned push's line, the last confident pose
+            self.gap_mm, self.finish, self.depart_rows = None, False, 0
+            self.following, self.push_limit, self.step_m = False, None, self.ps["speed_m"]
+            self.pinch0 = r.ctrl[self.arm].pos.clone()  # the pinch at the node's start: travel for the follow-through
+            self.follow_m = (self.ps.get("follow") or {}).get(f"{r.g.get('variant', '')}/{self.layer}")
 
     def _moved(self, s: State) -> float:
         return max((float((self.run.block_rest(s, b)[0][0] - p).norm()) for b, p in self.watch0.items()), default=0.0)
@@ -1073,7 +1506,15 @@ class PushNode(NodeBase):
             self.info = {"why": "timeout", "moved_mm": round(self._moved(s) * 1000, 1)}
             return Status.TIMEOUT, []
         bp, bq = r.block(s, self.spec["block"])
+        if self.rv is not None:  # repush_v2: an unseen row's pose (coasted or stale) is replaced by the last confident one
+            if float(s.block_conf[s.block_ids.index(self.spec["block"])]) >= CONF_MIN:
+                self.seen_pose = (bp, bq)
+            else:
+                bp, bq = self.seen_pose
         along, lat = push_geo.progress(bp, self.p0, self.dir)
+        # a policy trained with the estimator's losses (67-D, seen inputs; student plan Step 9a) acts through them;
+        # older ones get the hand-coded hold below
+        seen_inputs = self.pol is not None and getattr(self.pol, "obs_dim", None) == 67
         if float(s.block_conf[s.block_ids.index(self.spec["block"])]) < CONF_MIN:
             # the target is not seen this row (tipping over the tower edge, behind the pusher): hold still rather than
             # act on a stale pose (the actor, seeing a block that stopped, pushed harder: perception closed loop, Task
@@ -1083,7 +1524,7 @@ class PushNode(NodeBase):
                 self.info = {"along_mm": round(self.last_along * 1000, 1), "why": "lost_departed", "steps": self.steps}
                 self.retreat = 5
                 return self.step(s)
-            if self.lost_rows <= self.pg.get("lost_hold_rows", 15):
+            if self.lost_rows <= self.pg.get("lost_hold_rows", 15) and not seen_inputs:
                 r.command(arm, qm)
                 self.steps += 1
                 return None, [r.row()]
@@ -1093,15 +1534,37 @@ class PushNode(NodeBase):
         if moved > self.spec["structure_mm"] / 1000:
             self.info = {"why": "structure", "moved_mm": round(moved * 1000, 1), "along_mm": round(float(along[0]) * 1000, 1)}
             return Status.FAILED, []
-        if bool(push_geo.departed(bp, torch.tensor([self.z0], device=r.dev), self.tower_xy)[0]):
+        radial = bool(push_geo.departed(bp, torch.tensor([self.z0], device=r.dev), self.tower_xy)[0])
+        if self.depart_seen and self.lost_rows > 0:  # this row's pose is coasted or stale: not a departure
+            radial = False
+        inj = self.spec.get("inject") or {}
+        if "stop_r_m" in inj and float((bp[0, :2] - self.tower_xy[0]).norm()) >= inj["stop_r_m"]:
+            # student data collection (opt-in): the push ends short (v1-style, no settle), the block left over the footprint
+            self.info = {"along_mm": round(float(along[0]) * 1000, 1), "lat_mm": round(float(lat[0]) * 1000, 1),
+                         "moved_mm": round(moved * 1000, 1), "steps": self.steps, "injected_stop": True}
+            self.retreat = 5
+            return self.step(s)
+        if self.ps is not None:
+            out = self._settle_step(s, bp, bq, along, lat, moved, radial)
+            if out is not None:
+                return out
+        elif radial:
             self.info = {"along_mm": round(float(along[0]) * 1000, 1), "lat_mm": round(float(lat[0]) * 1000, 1),
                          "moved_mm": round(moved * 1000, 1), "steps": self.steps}
             self.retreat = 5
             return self.step(s)
-        if abs(float(lat[0])) > self.lat_fail:
+        if abs(float(lat[0])) > self.lat_fail and not (self.ps is not None and self.departing):
             self.info = {"why": "shoved", "lat_mm": round(float(lat[0]) * 1000, 1)}
             return Status.FAILED, []
         cpw, cqw = push_geo.push_pose(bp, self.dir, arm, self.pg["contact_along_m"], self.zoff)
+        if self.ps is not None and self.pol is not None and not self.handover and self.ps["handover_along_m"] is not None \
+                and float(along[0]) >= self.ps["handover_along_m"]:
+            self.handover, self.phase, self.line0 = True, 0, bp.clone()  # (variant) the planned push from here on
+            self.info["handover_along_mm"] = round(float(along[0]) * 1000, 1)
+        if self.ps is not None and self.hold:  # departing and not finishing: keep still until the block is confirmed
+            r.command(arm, qm)
+            self.steps += 1
+            return None, [r.row()]
         if self.pol is not None and not self.handover and "handover_along_m" in self.pg:
             # the learned push never saw debris (training parks the pushed blocks away): the last block of a layer came
             # to rest on the earlier blocks' debris while still leaning on the tower (not departed) and the actor then
@@ -1110,7 +1573,8 @@ class PushNode(NodeBase):
             # (not a block balanced at the tower edge or tipping over it: the actor finishes those itself, and a
             # planned re-approach behind a tipping block descended into the tower: 4-3 trace)
             speed = 0.0 if self.prev_bp is None else float((bp - self.prev_bp).norm()) / ROW_DT
-            self.static_rows = self.static_rows + 1 if speed < 0.01 else 0
+            # (67-D policies: a stale pose of an unseen target is not a stalled block, only seen rows count)
+            self.static_rows = self.static_rows + 1 if (speed < 0.01 and (self.lost_rows == 0 or not seen_inputs)) else 0
             level = float(geo.tilt_angle(bq)[0]) < math.radians(self.pg["handover_max_tilt_deg"])
             if float(along[0]) >= self.pg["handover_along_m"] and self.static_rows >= 3 and level:
                 self.handover, self.phase = True, 0
@@ -1129,11 +1593,28 @@ class PushNode(NodeBase):
                 at_contact = float((ctrl.pos - push_geo.push_pose(bp, self.dir, arm, self.pg["contact_along_m"] - 0.006,
                                                                   self.zoff)[0]).norm()) < 0.003
                 self.phase = 1 if (dn < 0.003 and (at_contact or not self.handover)) else 0
+                if self.phase == 1 and self.rv is not None and self.stroke0 is None:
+                    self.stroke0 = ctrl.pos.clone()
             else:
                 lat_dir = torch.stack([-self.dir[:, 1], self.dir[:, 0], torch.zeros_like(self.dir[:, 0])], -1)
-                tgt = ctrl.pos - lat_dir * ((ctrl.pos - self.p0) * lat_dir).sum(-1, keepdim=True)
+                ref = self.line0 if (self.ps is not None and self.line0 is not None) else self.p0
+                tgt = ctrl.pos - lat_dir * ((ctrl.pos - ref) * lat_dir).sum(-1, keepdim=True)
                 tgt[:, 2] = self.p0[:, 2] + self.zoff
-                ctrl.set_target(tgt + self.dir * 0.008, cqw)
+                if self.ps is not None and self.following:
+                    tgt[:, 2] += self.ps["follow_raise_m"]
+                step = 0.008
+                if self.ps is not None:
+                    step = self.step_m
+                    if self.push_limit is None:  # the finish: at most max_push_m beyond where it starts
+                        self.push_limit = float(((ctrl.pos - self.pinch0) * self.dir).sum()) + self.ps["max_push_m"]
+                        if self.rv is not None and self.stroke0 is not None:  # repush_v2: and max_total_m past contact
+                            self.push_limit = min(self.push_limit, float(((self.stroke0 - self.pinch0) * self.dir).sum())
+                                                  + self.rv["max_total_m"])
+                    if float(((ctrl.pos - self.pinch0) * self.dir).sum()) >= self.push_limit:
+                        step = 0.0  # pushed the whole stroke: hold until the block is confirmed (or lost long enough)
+                        if self.following:  # the follow-through is done: hold and confirm
+                            self.following, self.finish, self.hold = False, False, True
+                ctrl.set_target(tgt + self.dir * step, cqw)
         else:
             pb, qb = ctrl.kin.fk(qm, "pinch")
             tgt_pb, tgt_qb = base.to_base(ctrl.pos, ctrl.quat)
@@ -1149,19 +1630,95 @@ class PushNode(NodeBase):
                 target_pb=tpb, target_qb=tqb, dir_b=base.vec_to_base(self.dir), along=along, lateral=lat,
                 dyaw=geo.wrap_angle(geo.yaw_from_quat(bq) - self.yaw0), contact_pb=cpb, contact_qb=cqb, other_pb=opb, other_qb=oqb,
                 other_valid=valid, z0_world=torch.tensor([self.z0], device=r.dev), prev_actions=self.prev_a,
-                progress=torch.tensor([self.steps / self.max_steps], device=r.dev))
+                progress=torch.tensor([self.steps / self.max_steps], device=r.dev),
+                **({"seen": torch.tensor([self.lost_rows == 0], device=r.dev),
+                    "since_seen": torch.tensor([self.lost_rows / 5.0], device=r.dev)} if seen_inputs else {}))
             self.prev_pb, self.prev_qb = pb, qb
             a = self.pol(obs).clamp(-1, 1)
             self.ema = self.ac["ema"] * a[:, :6] + (1 - self.ac["ema"]) * self.ema
             d = float((ctrl.pos - cpw).norm())
             sc = self.ac["pos_near_m"] + (self.ac["pos_far_m"] - self.ac["pos_near_m"]) * \
                 min(1.0, max(0.0, (d - self.ac["near_radius_m"]) / (self.ac["far_radius_m"] - self.ac["near_radius_m"])))
+            es = self.ps.get("edge_slow") if self.ps is not None else None
+            if es and float(along[0]) >= es["along_m"]:
+                sc = sc * es["scale"]
             ctrl.apply_delta(base.vec_to_world(self.ema[:, :3] * sc), base.vec_to_world(self.ema[:, 3:6] * self.ac["rot_rad"]),
                              q_meas=qm, max_lead=self.ac["max_lead_m"])
             self.prev_a = a[:, :6]
         r.command(arm, qm)
         self.steps += 1
         return None, [r.row()]
+
+
+    def _stroke(self) -> float:
+        """repush_v2: how far the commanded pinch went along the push past its contact pose (0 before it got there)."""
+        if self.stroke0 is None:
+            return 0.0
+        return float(((self.run.ctrl[self.arm].pos - self.stroke0) * self.dir).sum())
+
+    def _settle_step(self, s, bp, bq, along, lat, moved, radial):
+        """push_settle (see the class doc): after the radial test fired, hold until the block is confirmed clear of the
+        footprint, or finish it with the planned push while it is seen over the footprint. Returns the step's result
+        when the node ends here (retreat), else None (``hold`` set while waiting). ``repush_v2`` (re-push only): the
+        planned push first runs ``min_push_m`` past its contact pose, and the block is confirmed only "flat clear"."""
+        from tower_rl.eval.mirror import FLAT, gap_to_footprint, rest_state
+
+        r, ps = self.run, self.ps
+        if self.rv is not None and self._stroke() < self.rv["min_push_m"]:
+            return None
+        if not self.departing and not (radial or self.rv is not None):
+            return None
+        if not self.departing:
+            self.departing, self.hold = True, True
+            self.info["radial_along_mm"] = round(float(along[0]) * 1000, 1)
+            ctrl = r.ctrl[self.arm]
+            if self.follow_m and float(((ctrl.pos - self.pinch0) * self.dir).sum()) < self.follow_m:
+                # the follow-through: straight on from where the pinch is (no re-approach), then hold and confirm
+                self.hold, self.finish, self.following, self.handover, self.phase = False, True, True, True, 1
+                self.line0, self.push_limit, self.step_m = ctrl.pos.clone(), self.follow_m, ps["follow_speed_m"]
+                self.info["follow_m"] = self.follow_m
+        self.depart_rows += 1
+        if self.following:  # pushing on regardless of the block until the stroke is done
+            return None
+        seen = float(s.block_conf[s.block_ids.index(self.spec["block"])]) >= CONF_MIN
+        if seen:
+            p, q = bp[0].cpu().numpy(), bq[0].cpu().numpy()
+            gap = gap_to_footprint(p, q, *self.foot)
+            self.gap_mm = round(gap * 1000, 1)
+            speed = 0.0 if self.prev_seen is None else float(np.linalg.norm(p - self.prev_seen[0])) / max(
+                ROW_DT * (self.steps - self.prev_seen[1]), ROW_DT)
+            self.prev_seen = (p, self.steps)
+            if self.rv is None:
+                clear = gap >= ps["clear_m"]
+                over = not clear
+            else:  # leaning / touching / tipped next to the base: not done; tipped or on a block further out: no use pushing
+                clear = rest_state(p, q, *self.foot)[0] == FLAT
+                over = not clear and gap < self.rv["near_m"] and self._stroke() < self.rv["max_total_m"]
+            if clear:
+                self.seen_clear, self.over_n = True, 0
+                self.clear_n = self.clear_n + 1 if speed < ps["rest_speed"] else 0
+                if self.finish:  # the planned finish got it clear: stop pushing, confirm
+                    self.finish, self.hold = False, True
+            elif over:
+                self.clear_n = 0
+                self.over_n += 1
+                if self.hold and self.over_n >= ps["over_calls"]:  # still over the footprint: finish it (planned push)
+                    self.hold, self.finish, self.handover, self.phase = False, True, True, 0
+                    self.line0 = bp.clone()
+                    self.push_limit, self.step_m = None, ps["speed_m"]
+                    self.info["finish_along_mm"] = round(float(along[0]) * 1000, 1)
+            else:
+                self.clear_n = 0
+        unconfirmed = self.depart_rows > ps["accept_rows"]
+        if self.clear_n < ps["confirm_calls"] and not unconfirmed:
+            return None
+        self.info = {**{k: v for k, v in self.info.items() if k in ("handover_along_mm", "radial_along_mm", "finish_along_mm",
+                                                                    "follow_m")},
+                     "along_mm": round(float(along[0]) * 1000, 1), "lat_mm": round(float(lat[0]) * 1000, 1),
+                     "moved_mm": round(moved * 1000, 1), "steps": self.steps, "gap_mm": self.gap_mm,
+                     **({"unconfirmed": True} if self.clear_n < ps["confirm_calls"] else {})}
+        self.retreat = 5
+        return self.step(s)
 
 
 def _structure_moved(run: EnvRun, s: State, ref: dict) -> float:
@@ -1391,6 +1948,22 @@ class PushInNode(NodeBase):
         self.width = self.ig["pusher_width_m"]
         run.grip[self.arm].reset(width=self.width, closed=True)
         self.hold, self.extra, self.prev_along = 0, 0.0, None
+        # opt-in (graph "pushin_kin", student plan Step 10): the pushed block is never behind the pusher's face, so its
+        # position along the slot axis is at least what the measured pinch implies (pinch + the contact offset); in
+        # the camera loop the estimate of a block disappearing into the tower drifts (up to 18 mm along the axis,
+        # 5-7 deg, Task 5-3 kp_v2 logs), and inside the slot (1 mm clearance) only its along position can still be off
+        self.kin = bool(spec.get("pushin_kin", run.g.get("pushin_kin", False)))
+        self.kin_last = None
+
+    def kin_along(self, s: State, sp, d, along: float) -> float:
+        """With ``pushin_kin``: max(perceived along, the pusher's contact bound), else the perceived along."""
+        if not self.kin:
+            return along
+        pp = self.run.pinch(s, self.arm)[0]
+        kin = float(((pp - sp) * d).sum()) - self.ig["pushin_contact_along_m"]
+        if self.phase < 2:
+            self.kin_last = kin
+        return max(along, kin)
 
     def step(self, s):
         r, arm = self.run, self.arm
@@ -1404,7 +1977,7 @@ class PushInNode(NodeBase):
             self.info = {"why": "structure", "moved_mm": round(moved * 1000, 1)}
             return Status.FAILED, []
         bp, bq = r.block(s, self.spec["block"])
-        along = float(((bp - sp) * d).sum())
+        along = self.kin_along(s, sp, d, float(((bp - sp) * d).sum()))
         line = sp + d * along  # the block's projection on the slot axis
         if self.pol is not None and self.phase < 2:  # the trained push_in actor until the block is home, then the retreat
             return self._learned_step(s, sp, sq, d, bp, bq, along, moved)
@@ -1468,6 +2041,11 @@ class PushInNode(NodeBase):
                 dxy, _, dyaw = ck.placement_error(*(x[0].cpu().numpy() for x in (bp, bq, sp, sq)))
                 self.info = {"place_xy_mm": round(dxy * 1000, 2), "yaw_deg": round(dyaw, 2), "moved_mm": round(moved * 1000, 1)}
                 ok = dxy <= self.spec["tol_pos_m"] and dyaw <= 5.0
+                if self.kin and self.kin_last is not None:
+                    fused = max(along, self.kin_last)  # the contact bound at the end of the push (the pinch has retreated)
+                    self.info["kin_along_mm"] = round(fused * 1000, 2)
+                    if fused > -0.05:  # inside the slot the walls fix lateral offset and yaw: judge the depth only
+                        ok = abs(fused) <= self.spec["tol_pos_m"]
                 return (Status.OK if ok else Status.FAILED), []
         r.command(arm, qm)
         return None, [r.row()]

@@ -1,0 +1,10 @@
+# The challenge policy server (scripts/serve_student.py; student plan Step 11). Command-line flags override these.
+policy_id: tower-student-v1        # pinned by qualification: later connections must advertise the same value
+plugin: tower-rl-student
+plugin_version: "1"                # bump whenever the adapter changes (it must match metadata and every response)
+host: 127.0.0.1                    # the Cloudflare tunnel connects locally
+port: 9001
+camera_source: evaluator           # "render" only for scripts/ws_loop.py (our Isaac renders)
+hold_until_confident_calls: 3      # hold while no movable block is confidently seen on the first calls
+save_images_every: 100             # the four images of call 1 and of every N-th call per episode (0: none)
+reconnect: true                    # advertise tower-reconnect-v1 (the session registry keeps the model state)
