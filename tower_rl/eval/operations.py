@@ -195,6 +195,43 @@ class OperationTracker:
         self.task_success = all(self.g_ok) and all(self.p_ok) and ok and (t - self.final_since >= settle - 1e-6)
         return self.task_success
 
+    def held_mask(self, pos: np.ndarray, pinch: np.ndarray, closed: np.ndarray) -> np.ndarray:
+        """Blocks held now (as ``update``: per closed gripper, the nearest movable block within ``hold_radius_m``)."""
+        held = np.zeros(len(pos), dtype=bool)
+        for a in range(len(pinch)):
+            if closed[a]:
+                d = np.linalg.norm(pos[self.movable] - pinch[a], axis=-1)
+                j = int(np.argmin(d))
+                if d[j] <= self.cfg.hold_radius_m:
+                    held[self.movable[j]] = True
+        return held
+
+    def instant(self, pos: np.ndarray, quat: np.ndarray, speed: np.ndarray, pinch: np.ndarray, closed: np.ndarray,
+                own: bool = False) -> list[bool]:
+        """Per transfer: satisfied now, i.e. ``update``'s P condition without its settle time: released, within
+        tolerance of its goal, static, the latched lower-layer goals still in tolerance, and (Task 5) the tower's side /
+        roof blocks in place (student plan §2.4: the progress head's truth). ``own``: the block's own condition only
+        (released, in tolerance, static), for the state-mode oracle."""
+        held = self.held_mask(pos, pinch, closed)
+        intact = structure_intact(pos, quat, self.pos0, self.structure, self.cfg) if self.pos0 is not None else True
+        inside = [self._in_goal(k, pos, quat) for k in range(len(self.transfers))]
+        out = []
+        for k, tr in enumerate(self.transfers):
+            ok = inside[k] and not held[tr.block] and speed[tr.block] < self.cfg.static_speed
+            if not own:
+                ok = ok and intact and all(inside[j] for j, o in enumerate(self.transfers)
+                                           if o.dest_layer < tr.dest_layer and self.p_ok[j])
+            out.append(bool(ok))
+        return out
+
+    def latched(self) -> tuple[int, int]:
+        """(G, P) successes latched so far."""
+        return sum(self.g_ok), sum(self.p_ok)
+
+    def disturbed_so_far(self) -> int:
+        """Disturbed block-occurrences counted so far (closed windows and the current one)."""
+        return sum(len(w) for w in self.window_disturbed) + len(self.current_disturbed)
+
     def outcome(self, duration_s: float, error: str | None = None) -> EpisodeOutcome:
         windows = list(self.window_disturbed)
         n_ops = 2 * len(self.transfers)
@@ -340,6 +377,17 @@ class PushTracker:
         settle = self.cfg.final_settle_s or self.cfg.settle_s
         self.task_success = ok and (t - self.final_since >= settle - 1e-6)
         return self.task_success
+
+    def instant(self, pos: np.ndarray, quat: np.ndarray, speed: np.ndarray, pinch: np.ndarray, closed: np.ndarray,
+                own: bool = False) -> list[bool]:
+        """Per push: satisfied now: the block is off the tower and static (student plan §2.4)."""
+        return [bool(self._off_tower(pos, p.block) and speed[p.block] < self.cfg.static_speed) for p in self.pushes]
+
+    def latched(self) -> tuple[int, int]:
+        return sum(self.g_ok), sum(self.p_ok)
+
+    def disturbed_so_far(self) -> int:
+        return sum(len(w) for w in self.window_disturbed) + len(self.current_disturbed)
 
     def outcome(self, duration_s: float, error: str | None = None) -> EpisodeOutcome:
         windows = list(self.window_disturbed)

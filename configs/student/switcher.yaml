@@ -1,0 +1,7 @@
+# Student switcher and option runtime (plan Appendix A, Step 7). Bump `features` on any token change and retrain.
+features: v1                 # token feature version (Appendix B)
+max_blocks: 16
+max_goals: 9
+model: {d_model: 128, layers: 3, heads: 4, dropout: 0.0}
+train: {lr: 3.0e-4, weight_decay: 1.0e-4, batch: 256, epochs: 30, val_frac: 0.1, nonnominal_weight: 5.0, progress_weight: 0.5}
+decide: {idle_requery_s: 2.0, device: cpu}

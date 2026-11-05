@@ -84,6 +84,13 @@ def arm_distance(world: StationWorld, qj: torch.Tensor) -> torch.Tensor:
     return torch.cdist(pts[0], pts[1]).flatten(1).min(-1).values
 
 
+def _focus_of(policy, e: int):
+    """(block id, skill) of the node the policy's env e runs (``focus_block`` / ``node_info``), for the noise model."""
+    if not hasattr(policy, "focus_block"):
+        return None
+    return lambda: (policy.focus_block(e), policy.node_info(e).get("skill"))
+
+
 def _validate(chunk) -> np.ndarray:
     a = np.asarray(chunk, dtype=np.float32)
     if a.ndim != 2 or a.shape[1] != 16 or not 1 <= a.shape[0] <= 16:
@@ -95,9 +102,12 @@ def _validate(chunk) -> np.ndarray:
 
 def run_batch(world: StationWorld, policy: Policy, sampler: DomainSampler | None, seed: int, max_time_s: float = 210.0,
               op_cfg: OpCfg | None = None, episode: Episode | None = None, stage: int = 0, rate_hz: int = 10,
-              noise: NoiseCfg | None = None, log=print, observe=None) -> list[EpisodeOutcome]:
-    """One episode per env. ``episode`` replaces the domain sample by that recording's initial state and goals.
-    ``rate_hz`` is the track: 10 (rows held 0.1 s) or 30 (rows held 1/30 s). ``observe(world, envs, states)``
+              noise=None, log=print, observe=None, case: list[str] | None = None) -> list[EpisodeOutcome]:
+    """One episode per env. ``episode`` replaces the domain sample by that recording's initial state and goals;
+    ``case`` forces the sampler's robustness case per env (default: drawn from ``seed``).
+    ``rate_hz`` is the track: 10 (rows held 0.1 s) or 30 (rows held 1/30 s). ``noise``: a ``NoiseCfg`` (independent
+    per-block perception noise) or a ``tower_rl.student.noise.NoiseModel`` (the estimator's errors, by block class).
+    ``observe(world, envs, states)``
     replaces the requesting envs' states (e.g. block poses estimated from the rendered cameras, tower_rl.perception);
     its ``reset(variant, seeds)`` runs with the policy's."""
     assert rate_hz in (10, 30)
@@ -110,7 +120,7 @@ def run_batch(world: StationWorld, policy: Policy, sampler: DomainSampler | None
         goals = {m["block_id"]: m["goal"] for m in episode.target_mapping if "goal" in m} or None  # Task 4: push targets
         cases = ["episode"] * n
     else:
-        dom = sampler.sample(n, gen)
+        dom = sampler.sample(n, gen, case=case)
         world.reset(dom, stage=stage, gen=gen)
         cases = dom.case
     pos, quat = world.block_pose()
@@ -132,7 +142,13 @@ def run_batch(world: StationWorld, policy: Policy, sampler: DomainSampler | None
         if episode is None and hasattr(observe, "set_domain"):  # e.g. the case "lighting" on the rendered cameras
             observe.set_domain(world, dom)
     queues = [deque() for _ in range(n)]
-    noisers = [PerceptionNoise(noise, len(world.block_ids), seeds[e] + 7) for e in range(n)] if noise else None
+    if noise is None:
+        noisers = None
+    elif hasattr(noise, "make"):  # tower_rl.student.noise.NoiseModel: estimator-like noise, focused on the policy's target
+        fixed = np.array([bool(world.layout.fixed[b]) for b in world.block_ids])
+        noisers = [noise.make(world.block_ids, fixed, seeds[e] + 7, focus=_focus_of(policy, e)) for e in range(n)]
+    else:
+        noisers = [PerceptionNoise(noise, len(world.block_ids), seeds[e] + 7) for e in range(n)]
     act_wall = []
     done = [False] * n
     errors: list[str | None] = [None] * n
@@ -155,10 +171,28 @@ def run_batch(world: StationWorld, policy: Policy, sampler: DomainSampler | None
                 done[e] = True
                 t_end[e] = t
 
+    def with_truth(need, states):
+        """Per-goal truth for the student's labels (plan §2.4): ``ops`` (satisfied now), ``ops_own`` (the goal's own
+        condition, without the lower layers / structure), ``ops_latched`` (G, P latched) and ``disturbed``
+        (disturbances counted so far), in ``privileged`` (no deployable code reads them)."""
+        p, q4 = world.block_pose()
+        sp = world.block_speed()
+        qj, w = world.joints()
+        pinch = world.pinch_world(qj)
+        p, q4, sp, w, pinch = (x.cpu().numpy() for x in (p, q4, sp, w, pinch))
+        out = []
+        for e, st in zip(need, states):
+            tr = trackers[e]
+            args = (p[e], q4[e], sp[e], pinch[e], w[e] < HOLD_WIDTH)
+            priv = dict(st.privileged, ops=tr.instant(*args), ops_own=tr.instant(*args, own=True),
+                        ops_latched=tr.latched(), disturbed=tr.disturbed_so_far())
+            out.append(dataclasses.replace(st, privileged=priv))
+        return out
+
     while world.time < max_time_s - 1e-6 and not all(done):
         need = [e for e in range(n) if not done[e] and not queues[e]]
         if need:
-            states = [world.state(e) for e in need]
+            states = with_truth(need, [world.state(e) for e in need])
             if observe is not None:
                 states = observe(world, need, states)
             if noisers:
@@ -190,6 +224,8 @@ def run_batch(world: StationWorld, policy: Policy, sampler: DomainSampler | None
                         "act_calls": len(act_wall)})
         if hasattr(policy, "episode_log"):
             o.extra["policy_log"] = policy.episode_log(e)
+        if hasattr(policy, "episode_extra"):  # e.g. the student's shadow comparison
+            o.extra.update(policy.episode_extra(e))
         if shadows is not None:
             o.extra["task_success_collapse_only"] = bool(o.task_success or shadow_done[e])
         outs.append(o)

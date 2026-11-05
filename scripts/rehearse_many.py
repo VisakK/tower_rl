@@ -7,6 +7,7 @@ Each process: ``rehearse.py --headless --device cpu --variant <v> --tiers <tiers
 """
 import argparse
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -31,6 +32,9 @@ def main():
     ap.add_argument("--perception_noise", action="store_true")
     ap.add_argument("--noise", default="{}")
     ap.add_argument("--graph_set", default="{}", help="JSON merged into every graph's top level (rehearse.py --graph_set)")
+    ap.add_argument("--finger_effort", type=float, default=None, help="rehearse.py --finger_effort (N)")
+    ap.add_argument("--student", default=None, help="rehearse.py --student: oracle_graph | oracle_state | <switcher.pt>")
+    ap.add_argument("--extra", default="", help="further rehearse.py arguments, passed verbatim (shell-split)")
     ap.add_argument("--bundle_configs", action="store_true", help="TOWER_CONFIG_DIR=<bundle>/configs (export check)")
     ap.add_argument("--nice", type=int, default=15, help="niceness of the rehearsal processes")
     ap.add_argument("--out_root", required=True)
@@ -54,6 +58,11 @@ def main():
                 cmd += ["--perception_noise", "--noise", args.noise]
             if args.graph_set != "{}":
                 cmd += ["--graph_set", args.graph_set]
+            if args.finger_effort is not None:
+                cmd += ["--finger_effort", str(args.finger_effort)]
+            if args.student:
+                cmd += ["--student", args.student]
+            cmd += shlex.split(args.extra)
             log = open(out / "logs" / f"{v}.log", "w")
             # low CPU priority: rehearsals (CPU PhysX, many worker threads) must not slow a GPU training sharing the CPU
             running[v] = (subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,

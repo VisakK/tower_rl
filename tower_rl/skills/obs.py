@@ -89,15 +89,21 @@ def place_release_actor_obs(*, pb, qb, prev_pb, prev_qb, dt, tgt_pb, tgt_qb, wid
 
 
 def push_actor_obs(*, pb, qb, prev_pb, prev_qb, dt, tgt_pb, tgt_qb, target_pb, target_qb, dir_b, along, lateral, dyaw,
-                   contact_pb, contact_qb, other_pb, other_qb, other_valid, z0_world, prev_actions, progress) -> torch.Tensor:
+                   contact_pb, contact_qb, other_pb, other_qb, other_valid, z0_world, prev_actions, progress,
+                   seen=None, since_seen=None) -> torch.Tensor:
     """65-D push actor observation (base frame; Task 4 push and Task 5 push-in, layout in ``push_env``): pinch pose /
     velocity / target lead (21), target block in the pinch frame (9), target position (3), push direction (3), target
     travel along / across the push and its yaw change since the start (3), pinch error to the contact pose (6), two
-    nearest other blocks relative to the target (12), the target's start height (1), previous action (6), progress (1)."""
+    nearest other blocks relative to the target (12), the target's start height (1), previous action (6), progress (1).
+    With ``seen`` / ``since_seen`` (student plan Step 9a): 67-D, + whether the target was seen this call (estimator
+    confidence >= 0.5) and the calls since it was last seen / 5, clipped to 1."""
     vel = torch.cat([(pb - prev_pb) / dt, geo.quat_error_rotvec(prev_qb, qb) / dt], -1)
     lead = torch.cat([tgt_pb - pb, geo.quat_error_rotvec(qb, tgt_qb)], -1)
     tp, tx, tz = _axes_in(pb, qb, target_pb, target_qb)
     cp, cq = geo.frame_relative(pb, qb, contact_pb, contact_qb)
     neigh = neighbors(other_pb, other_qb, other_valid, target_pb, target_qb)
-    return torch.cat([pb, rot6d(qb), vel, lead, tp, tx, tz, target_pb, dir_b, along[:, None], lateral[:, None], dyaw[:, None],
-                      cp, geo.rotvec_from_quat(cq), neigh, z0_world[:, None], prev_actions, progress[:, None]], -1)
+    obs = torch.cat([pb, rot6d(qb), vel, lead, tp, tx, tz, target_pb, dir_b, along[:, None], lateral[:, None], dyaw[:, None],
+                     cp, geo.rotvec_from_quat(cq), neigh, z0_world[:, None], prev_actions, progress[:, None]], -1)
+    if seen is None:
+        return obs
+    return torch.cat([obs, seen.float()[:, None], since_seen.float().clamp(0, 1)[:, None]], -1)

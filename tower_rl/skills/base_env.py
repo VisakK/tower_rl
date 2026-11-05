@@ -94,6 +94,14 @@ class SkillEnvBase(DirectRLEnv):
         self.base = ArmBase(self.arm, device=dev)
         self.ctrl = ArmController(self.arm, n, device=dev, cfg=ArmControllerCfg(), kin=self.kin)
         self.grip = GripperController(n, device=dev, cfg=gripper_cfg())
+        # student plan Step 9b (opt-in): the closed-gripper command width, and a finger effort limit (N) drawn per env
+        # at every reset from ``finger_effort_choices`` (the evaluator's limit is unknown: 3 N or 22 N)
+        if sk.get("gripper_closed_width") is not None:
+            self.grip.cfg.closed_width = float(sk["gripper_closed_width"])
+        self.effort_choices = sk.get("finger_effort_choices")
+        self.finger_effort = torch.zeros(n, device=dev)
+        if self.effort_choices:
+            self.finger_jids = self.robot.find_joints(["gripper_joint1", "gripper_joint2"], preserve_order=True)[0]
         self.rz = rest_heights(dev)
         # (variant, stage) pairs this arm executes (skill YAML ``variants``: default the Tasks 1-3 transfer variants)
         self.specs = [load_spec(v, device=dev) for v in sk.get("variants", VARIANTS)]
@@ -234,6 +242,12 @@ class SkillEnvBase(DirectRLEnv):
         self._robot_mat[eid, :, 0] = ff[:, 0:1]
         self._robot_mat[eid, :, 1] = ff[:, 1:2]
         rv.set_material_properties(self._robot_mat, eid)
+        if self.effort_choices:  # Step 9b
+            ch = torch.tensor(self.effort_choices, dtype=torch.float32, device=self.device)
+            e = ch[torch.randint(len(ch), (len(env_ids),), generator=self.gen, device=self.device)]
+            self.finger_effort[env_ids] = e
+            self.robot.write_joint_effort_limit_to_sim(e[:, None].expand(-1, len(self.finger_jids)).contiguous(),
+                                                       joint_ids=self.finger_jids, env_ids=env_ids)
 
     # ------------------------------------------------------------------ tower reset
     def _sample_towers(self, env_ids: torch.Tensor):

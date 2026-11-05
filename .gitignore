@@ -1,13 +1,6 @@
-# downloads, generated assets and run outputs: recreate them with the README "Setup" commands
-# (anchored to the repo root: an unanchored data/ also matched the package tower_rl/data/)
 /data/
-/assets_m/
 /results/
-
-# Python
+/assets_m/*
+!/assets_m/tower_station_m.json
 __pycache__/
 *.pyc
-
-# editors
-.vscode/
-.idea/

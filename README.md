@@ -1,377 +1,73 @@
-# tower_rl
+# `student_v1` as evaluated
 
-Isaac Lab recreation of the [TOWER CoRL 2026 challenge](https://challenge.tower-benchmark.com/docs/) evaluator
-(two AgileX Nero arms, Jenga towers) as the base for a reinforcement-learning approach.
+Tag `eval/student_v1` holds the exact code that served `student_v1` in the TOWER challenge evaluation.
+[`REVIEW.md` on `main`](https://github.com/VisakK/tower_rl/blob/main/REVIEW.md) covers all submissions and how this code differs from `main`.
 
-## Setup
-
-All commands run from the repository root with the Isaac Lab virtual environment active:
-
-```bash
-source ~/Documents/moves/env_isaaclab/bin/activate   # Isaac Sim 5.1.0 (pip) + Isaac Lab 2.3.0
-cd ~/Documents/tower_rl
-```
-
-`data/`, `assets_m/` and `results/` are not in git. On a fresh clone, download the assets, the dataset metadata and
-three example episodes (non-image arrays only, ~5 s each), then build the meter-unit wrappers:
-
-```bash
-python -I -c "
-from huggingface_hub import snapshot_download
-snapshot_download('tower-benchmark/TOWER-Assets', repo_type='dataset', local_dir='data/TOWER-Assets',
-                  revision='538d8b1fb582a4c3fc8c5a2fb2bf3a82931e9a4c')
-snapshot_download('tower-benchmark/TOWER-SimData', repo_type='dataset', local_dir='data/SimData-meta',
-                  revision='1a59248e44866b1593e4ac8b851aa519c013220f',
-                  allow_patterns=['README.md', 'schema/*', 'MANIFEST.jsonl', 'CHECKSUMS.sha256', 'CITATION.cff', 'LICENSE', 'previews/*'])
-"
-python -I scripts/peek_hdf5_remote.py data/task2-3_cross_tower_transfer_3/episode_000001_20260910T024604Z_2a92f2b7.hdf5 data/episodes/t23_ep1.npz
-python -I scripts/peek_hdf5_remote.py data/task1-3_tower_transfer_3/episode_001022_20260909T153526Z_254a6af4.hdf5 data/episodes/t13_ep.npz
-python -I scripts/peek_hdf5_remote.py data/task3-3_vertical_stacking_3/episode_000001_20260910T023237Z_72e36c99.hdf5 data/episodes/t33_ep.npz
-python -I scripts/make_meter_assets.py data/TOWER-Assets assets_m station.usdz
-```
-
-The wrappers in `assets_m/` reference `data/TOWER-Assets` by absolute path: rerun the last command after moving the
-repository.
-
-## Visualize the scene
-
-`scripts/play_episode.py` builds the scene for one recorded episode and opens the Isaac Sim window (startup takes about
-a minute). Playback runs in real time; the terminal prints the task phase every simulated second.
-
-```bash
-# open-loop replay: the recorded 30 Hz joint commands drive the simulated arms, blocks are fully simulated
-python scripts/play_episode.py --episode t23_ep1
-
-# the recorded states themselves (ground truth, kinematic)
-python scripts/play_episode.py --episode t23_ep1 --mode recorded
-
-# replay (env 0, left) next to the recording (env 1, right); the terminal also prints their divergence
-python scripts/play_episode.py --episode t23_ep1 --mode compare
-
-# just the scene at a frame: arms hold their pose, blocks are free (they creep slightly, as in the evaluator)
-python scripts/play_episode.py --episode t33_ep --mode hold --start_frame 0
-```
-
-Episodes in `data/episodes/`: `t23_ep1` (Task2-3 cross tower, 94 s), `t13_ep` (Task1-3 tower transfer, 178 s),
-`t33_ep` (Task3-3 vertical stacking, 87 s). Useful options:
-
-| Option | Effect |
+| | |
 |---|---|
-| `--start_frame N`, `--end_frame N` | play a segment (30 frames per second) |
-| `--speed 2` | 2x real time (`0` = as fast as possible) |
-| `--loop` | restart at `--start_frame` when the episode ends |
-| `--open_view` | hide the curtains and station frame; adds a dome light (`--dome_light 0` to remove) |
-| `--eye x y z --target x y z` | initial viewpoint in the station frame (meters) |
-| `--finger_friction S D`, `--delay_substeps L B` | replay physics (defaults 1.2 1.0 and 1 1 best match the data) |
+| Policy ID | `tower-student-v1` |
+| Artifact identity | `sha256:01ab88da17d7f9003bde56ff4db1c71c885298598994eb3dd0f6f031fd4bccdd`, the sha256 of `student_v1.tar.gz`, which the server advertises |
+| Plugin version | `1` |
+| Track | `tower-sim-all`, version `20261013-v1-task45-10hz-reconnect`, 10 Hz |
+| Code snapshot | `tower_rl_snapshots/server_v1` on the development machine |
+| Bundle created | 2026-10-22T19:45:55 PDT (its `MANIFEST.json`) |
 
-In the window: right-drag looks around, right-drag + `W A S D` flies, `Alt` + left-drag orbits, the scroll wheel
-zooms, `F` frames the prim selected in the Stage panel. Pause/Play in the toolbar pauses the playback; when the
-episode ends the arms hold their last command until the window is closed.
+## How this commit relates to what ran
 
-Record a video without a window:
+**No git commit existed when this ran.** The server ran from a frozen copy of the code outside git
+(`scripts/make_snapshot.sh`), and the bundle's MANIFEST records `git_commit: f5e8cce` with `git_dirty: true`. This commit
+was made on 2026-11-05 from that frozen copy, so its date is later than the evaluation.
 
-```bash
-python scripts/play_episode.py --episode t13_ep --headless --video results/videos/t13_replay.mp4
-python scripts/play_episode.py --episode t23_ep1 --mode compare --start_frame 250 --max_frames 900 \
-    --headless --video results/videos/t23_compare.mp4
-```
+- `tower_rl/`, `scripts/`, `configs/` and `pytest.ini` (213 files) are byte-identical to the snapshot, without
+  `__pycache__`.
+- Three files are added: `assets_m/tower_station_m.json`, `.gitignore` and this README.
+- The snapshot's `data`, `assets_m` and `results` were symlinks into the development repository, and the bundle and
+  `track.json` were passed as arguments. `assets_m/tower_station_m.json` is the one other file the server read through
+  those links. It is the same file (sha256 `33dd726c340eaa7b3877a486b0380ad8e9bebd2cf0851d18e4b28823802b991d`, last modified 2026-10-18 22:05 PDT). The server reads
+  only its `cameras` section, so the local paths elsewhere in the file are not used.
 
-To look at another episode, pick its path in `data/SimData-meta/MANIFEST.jsonl`, fetch it, and pass its name:
+Evidence for the freeze date, from the development machine: the newest file in the snapshot is from 2026-10-24 08:01 PDT, and the
+oldest Python cache in its `tower_rl/server/` is from 2026-10-24 08:01 PDT. The server logs were shared with the reviewers.
 
-```bash
-python -I scripts/peek_hdf5_remote.py data/task3-2_vertical_stacking_2/<episode file>.hdf5 data/episodes/t32_ep.npz
-python scripts/play_episode.py --episode t32_ep
-```
+## What ran
 
-## Validate
+One server process ran for the whole evaluation:
 
-`scripts/validate_isaaclab_scene.py` checks the scene against recorded data (`--help` lists the modes):
+- Served 2026-10-24 08:46:22 PDT, process 2385747.
+- The evaluation started 2026-10-26 11:56 PDT. The last server event is 2026-10-27 16:23 PDT.
 
-```bash
-# kinematics: recorded end-effector pose == link7 in base_link (offset std ~0.0001 mm)
-python scripts/validate_isaaclab_scene.py --headless --mode fk --num_envs 1 --episode t23_ep1 --out /tmp/fk.json
-
-# open-loop replay with block-trajectory errors against the recording
-python scripts/validate_isaaclab_scene.py --headless --mode replay --num_envs 1 --episode t33_ep \
-    --finger_friction 1.2 1.0 --delay_substeps 1 1 --out /tmp/replay_t33.json
-
-# physics throughput, and rendering throughput of the four evaluator cameras
-python scripts/validate_isaaclab_scene.py --headless --mode bench --num_envs 1024 --episode t23_ep1 --out /tmp/bench.json
-python scripts/validate_isaaclab_scene.py --headless --enable_cameras --mode render_bench --num_envs 16 --cam_scale 0.25 \
-    --episode t23_ep1 --out /tmp/rbench.json
-```
-
-## Agentic teacher (privileged)
-
-Built from `~/Documents/corl_challenge/TOWER_BUILD_INSTRUCTIONS.md`; progress, acceptance numbers and every deviation
-are in `BUILDLOG.md`. The teacher is a typed graph of skill calls per variant (`tower_rl/graph/graphs/*.json`)
-interpreted by a deterministic executor: planned transits and parks (IK + gravity-sag compensation), and two
-contact skills, `grasp_lift` and `place_release`, trained with PPO on privileged critics but camera-estimable actor
-inputs. Until a skill is trained for an arm, the executor uses a planned fallback with the same checkpoints.
+The command, from the snapshot directory (`run.json`):
 
 ```bash
-# Step 1: data subset (non-image arrays over HTTP range requests), layouts, events, grasp geometry
-python -I scripts/fetch_subset.py --per_variant 10
-python -I scripts/build_layouts.py            # configs/layouts/<variant>.yaml + results/layouts/*.png
-python -I scripts/analyze_subset.py           # results/data/subset_analysis.json
-python -I scripts/build_posture_priors.py     # configs/skills/posture_priors.yaml
-python scripts/extract_robot_model.py         # configs/robot/nero.json (chain, inertials, evaluator drives)
-
-# Step 2: scenes (light skill scene on GPU; station scene on CPU = evaluator-faithful)
-python -m pytest --isaac tests/test_scenes.py
-python scripts/replay_demo.py --headless --device cpu --variant task2-2_cross_tower_transfer_2 --num_replays 2 \
-    --out results/calibration/replay_task2-2_cpu.json
-
-# Step 3: local evaluator (metrics, operation tracker, chunked runner)
-python scripts/evaluate_policy.py --headless --device cpu --variant task2-2_cross_tower_transfer_2 --policy replay \
-    --rate_hz 30 --replay_episodes data/subset/task2-2_cross_tower_transfer_2/*.npz --finger_friction 1.2 1.0
-python scripts/sweep_tolerance.py --headless --device cpu --variant task2-3_cross_tower_transfer_3
-
-# Steps 5-6: skills (GPU, light scene); oracle sanity checks; deterministic evaluation per tier
-python scripts/oracle_skill.py --headless --skill grasp_lift --arm left --num_envs 256
-python scripts/train_skill.py --headless --skill grasp_lift --arm left --num_envs 4096 --max_iterations 1500
-python scripts/evaluate_skill.py --headless --skill grasp_lift --arm left --checkpoint <run dir> --tier D1 --episodes 500
-#   [--perception_noise [--noise '{"bias_pos_m": 0.003}']]   # Step 8.1: provisional perception model on the actor
-
-# Step 7: rehearsal of the whole teacher (CPU station scene) -> results/rehearsal/<variant>/<tier>/feedback.md
-python scripts/rehearse.py --headless --device cpu --variant task1-3_tower_transfer_3 --tiers D0 D1 --episodes 8 \
-    [--bundle bundle] [--perception_noise]
-python scripts/freeze_bundle.py --skill grasp_lift:left=<run dir> ...   # bundle/ + bundle.tar.gz + sha256
-# all variants in parallel processes (Step 7 acceptance N >= 100; Step 8: --perception_noise, --bundle_configs
-# = configs from the bundle (export check), --rate_hz 30); summary with Step 7 pass/fail per cell
-python scripts/rehearse_many.py --bundle <bundle> --episodes 100 --parallel 4 --out_root results/rehearsal_final/<b>
-# diagnose a failure signature from feedback.md (example (seed 1000003, ...) = rehearsal seed 1000, batch 0, env 3);
-# rehearsals are deterministic for a fixed code + bundle, so the env reproduces exactly
-python scripts/trace_episode.py --headless --device cpu --variant task2-2_cross_tower_transfer_2 --tier D1 \
-    --seed 1000 --env 3 --bundle <bundle> --out results/traces/t22_1000003.jsonl [--fine 17.3 18.0] [--video f.mp4]
-# watch the teacher solve a task: mp4 of the four evaluator cameras, real time (one frame per 0.1 s row), or live in
-# the Isaac Sim window (--live, without --headless; RTX rendering every row)
-python scripts/trace_episode.py --headless --device cpu --variant task2-3_cross_tower_transfer_3 --tier D0 \
-    --num_envs 1 --seed 1 --bundle results/bundles/teacher_v6 --video results/videos/teacher_t23.mp4 --cam_scale 1.0
-python scripts/drop_test.py --headless --device cpu --n 64      # block-release statistics vs height (CPU or GPU)
-python scripts/release_test.py --headless --device cpu          # the planned place's release, many times
-# Step 8.1: where perception noise turns into placement error (per place: executor estimates vs simulator truth;
-# --probe_bias for fixed biases, --graph_set to try graph settings), then a per-arm summary
-python scripts/noise_diag.py --headless --device cpu --variant task3-3_vertical_stacking_3 --bundle <bundle> \
-    --noise '{"bias_pos_m": 0.001, "bias_yaw_deg": 1.0, "shared_pos_m": 0.003, "shared_yaw_deg": 3.0}' \
-    --out results/noise_diag/t33.jsonl
-python -I scripts/summarize_noise_diag.py results/noise_diag/t33.jsonl
+python scripts/serve_student.py --track data/challenge/track.json --bundle /home/visakii/Documents/tower_rl/results/bundles/student_v1 --name official_1
 ```
 
-Grasp quality: `grasp_lift` succeeds only for a near-canonical grasp (pinch within 10 mm along the block and 5 mm
-vertically of the centred grasp, gripper within 6 deg of the canonical orientation), measured in the block frame by
-`tower_rl.grasp.grasp_relation_error` (a lifted block hangs tilted with the gripper, so world-referenced comparisons
-are wrong); `place_release` trains with held offsets up to that gate. Transits aim at the nearest reachable pose of
-their via-point (`reachable_pose`), so a via-point a joint limit makes unreachable cannot stall the arrival check.
+The official wrappers (tmux, Cloudflare quick tunnel) are in `reproduce/evaluated/official/` on `main`.
 
-Held blocks: from the moment a gripper holds a block (before it moves) until it is released, the executor estimates
-that block's pose as pinch x offset (`EnvRun.block_est`), refreshed only by confident, consistent measurements, so a
-perception dropout of the moving block (the one the fingers occlude) cannot mislead the skills or the release pose.
+## Serve it
 
-Perceived poses (`tower_rl.graph.estimates`): every call feeds each block's pose to a rest-pose estimate (median of
-its recent mutually consistent poses; a one-call outlier is held back, two consecutive far poses mean the block moved,
-dropouts with confidence < 0.5 are ignored). Targets computed once (pre-grasps, goals from the destination foundation,
-`arm_clear`, reachability) use these estimates; the skills' observations stay per call, as in training. A gripped block
-is attached from its rest estimate; the place check decides on the median of a window of perceived poses once the
-block is at rest (window medians, not per-call displacement, which perception jitter breaks). Goal orientation comes
-from the foundation blocks' perceived yaws (an orientation error common to all blocks cancels against the held
-block's), goal positions from the line through their centres. Graph `"perception": {"jaw_to_goal": w}` moves the share
-w of the held block's perceived offset along the jaw (perception error: the fingers centre the block, and the place
-policies ignore that offset) from the block to the place policy's goal: w = 1 cancels errors shared by all blocks,
-w = 0 suits independent per-block errors; graphs v5 use 0.5 until the pose estimator's errors are measured.
+You need Python 3.11, a CUDA GPU with about 2 GB free for the pose network, and these packages
+(`reproduce/environment/requirements-inference.txt` on `main` installs them). Isaac Sim and Isaac Lab are not needed to
+serve.
 
-CPU scripts set `torch.set_num_threads(1)`: torch's default threads on the executor's tiny tensors cost ~6 cores per
-process and made rehearsals slower.
+```
+torch==2.7.0+cu126  torchvision==0.22.0+cu128  numpy==1.26.0  scipy==1.15.3
+opencv-python-headless==4.11.0.86  PyYAML==6.0.2  msgpack==1.1.2  websockets==15.0.1
+```
 
-Executor failure handling (graph `on_fail`, default `retry`): a failure restarts the transfer with the gripper open,
-up to `graph.retries` times, then skips to the next node of a later transfer (which may be the park that clears the
-arm); a transport failure while the block is still in the gripper retries from the pre-place transit; a held transit
-fails as soon as the gripper closes past the block width; a transfer whose block fell off the table is skipped; a
-pre-grasp via-point far out of reach fails at once; a near-miss place (<= `arm_switch_m`, 15 mm) that its own arm
-cannot re-grasp is re-grasped and re-placed by the other arm (inserted park / transit / grasp / transit / place /
-park nodes). Before every transit the other arm must be clear of the target tower (`arm_clear`), else it is parked.
-
-Pure-python tests (no Isaac): `python -m pytest` (kinematics vs the dataset, layouts, reachability of every via-point,
-metrics, operation tracker, graphs, transit limits, executor determinism).
-
-### Tasks 4 and 5 (push-down, insertion)
-
-Same graph + executor, two more graph families (`tower_rl/graph/graph.py`; BUILDLOG "session 3"). **Push-down** (Task
-4): per block, in the prescribed order, transit to `prepush` (fingers closed into the pusher tool) -> `push` (PPO, per
-arm: `tower_rl/skills/push_env.py`). A learned push whose block stalls part-way out but level (debris under the last
-block of a layer) is finished by the planned straight push (`handover_*` in `configs/skills/push.yaml`). **Insertion**
-(Task 5): per insert, highest gap first, transit to the pre-grasp -> `grasp_lift` (planned in Task 5: graph
-`grasp_planned`) -> held transit to `preinsert` (block on the slot axis, 17 cm out) -> `insert` (held entry to 9 cm,
-release, back off) -> transit to `prepushin` -> `push_in` (to the slot centre). `insert` / `push_in` have PPO envs
-(`tower_rl/skills/task5_env.py`), but the planned closed-loop versions in the executor are the default: on the CPU
-evaluator they beat the GPU-trained ones (BUILDLOG). Tasks 4 / 5 run with a 3 N finger effort limit: hold at 42.5 mm
-(the full 3 N), lift gently (`lift_v_m_s`); the push-in crosses an open gap below its slot with the pusher sliding down
-the end face (`cross_window_m`, `cross_z_m`).
+The bundle tar was shared with the reviewers separately, and `track.json` comes from the challenge site.
 
 ```bash
-python scripts/build_layouts.py --t45                      # configs/layouts/task4-* / task5-*.yaml
-python -m tower_rl.graph.graph task4-2_full_tower_pushdown_2 task5-3_tower_insertion_3   # graphs
-python scripts/oracle_push.py --headless --arm left        # scripted push through the skill env (sanity)
-python scripts/train_skill.py --headless --skill push --arm back --max_iterations 300 \
-    [--override '{"reset": {"debris": {"frac": 0.7}}}'] [--resume <model.pt>]   # debris: earlier blocks on the table
-python scripts/evaluate_skill.py --headless --skill push --arm back --checkpoint <run dir> --tier D1 --episodes 500
-python scripts/oracle_task5.py --headless --skill insert --arm left --num_envs 128 [--ig_override '{...}']
-python scripts/train_skill.py --headless --skill push_in --arm left --max_iterations 250
-python scripts/grip_capacity.py --headless --device cpu --episode data/subset/task5-2_tower_insertion_2/<stem>.npz
-python scripts/rehearse_many.py --bundle results/bundles/teacher_t45_final --variants task4-2_full_tower_pushdown_2 \
-    task4-3_full_tower_pushdown_3 --tiers D0 D1 --episodes 20 --out_root results/t45/<name>
+git clone https://github.com/VisakK/tower_rl.git && cd tower_rl
+git checkout eval/student_v1
+sha256sum student_v1.tar.gz        # must print 01ab88da17d7f9003bde56ff4db1c71c885298598994eb3dd0f6f031fd4bccdd
+mkdir -p results/bundles && tar xzf student_v1.tar.gz -C results/bundles
+python scripts/serve_student.py --track <track.json> --bundle results/bundles/student_v1 --name review \
+    --port 9001 --policy_id tower-student-v1 --plugin_version 1 --artifact_identity sha256:01ab88da17d7f9003bde56ff4db1c71c885298598994eb3dd0f6f031fd4bccdd
+
+# second terminal: the qualification-like checks (every variant, two resets, zero-valued images)
+python scripts/probe_server.py ws://127.0.0.1:9001 --track <track.json>
 ```
 
-Rehearsals of Tasks 4 / 5 report a second success rate, "TSR collapse-only": our tracker fails a task once a block of
-the remaining tower is > 10 mm from its episode-start pose, while the generator's records only show its collapse rule
-(30 deg tilt / 15 mm drop); which one the leaderboard uses is not published.
-
-## Pose estimator (images -> block poses)
-
-The challenge observes only four RGB images, joint angles and gripper widths; `tower_rl/perception/` turns them into the
-executor's `State` block poses (BUILDLOG "session 4"). A keypoint network (`model.py`: ImageNet ResNet-34 U-Net,
-full-resolution logits for block corners, block edges, the visible-block mask and block surfaces hidden by an arm or
-finger) runs on each image; `estimator.py`
-fits every block's 6-DoF pose to the corner peaks and to the edge maxima along the normals of its projected visible
-edges in all four cameras (robust Gauss-Newton, coarse to fine), starting from its previous estimate, the gripper's FK
-pose times the measured offset for a held block, or, at the first call, the variant's nominal layout and a coarse
-search. Blocks whose fit fails, or that match fewer than 75 % of their predicted visible corners (a block slid along
-its length keeps its long edges), are searched again around their prior and along their long axis (a push moves a
-block up to ~40 mm per 0.1 s call; a block that moved is also predicted to keep moving); lost blocks are then looked
-for lying on the table, on their side, flat on top of other blocks or leaning against the tower (knocked or pushed
-off), with back-off while not found; after 3 failed searches a block is a "ghost" (confidence 0, hides nothing).
-Foundations are fitted flat on the table (x, y, yaw) and frozen after 10 good fits (blocks stacked on a pad hide it);
-no estimate may sit inside another block (a lost block's refit could otherwise take a neighbour's image features).
-
-Use (one estimator per episode stream; GPU):
-
-```python
-from tower_rl.perception.estimator import PoseEstimator
-est = PoseEstimator("results/perception/models/kp_v2/model_last.pt", device="cuda", source="evaluator")
-est.reset(variant)                      # at every episode start (block set, layout, nominal poses)
-pos, quat, conf = est(images, q, widths)  # images: {camera id: uint8 [480, 640, 3] RGB as delivered}, q [2, 7] rad,
-                                        # widths [2] m; -> [B, 3] m, [B, 4] wxyz, [B] in est.block_ids order
-```
-
-Confidence 1: a good fit; 0.6: accepted with fewer inliers; 0.3: not found this call (previous pose kept); 0: lost
-for several searches (pose unknown). Held blocks are reported as the gripper's FK pose times their measured offset.
-Calls take ~0.1 s on the A5000 (network ~40 %); the first call of an episode searches every block (~0.35 s).
-
-Camera model (`cameras.py`; verified to 0.25 px on the organizers' JPEGs): pinhole with the recorded K, principal point
-(cx - 0.5, cy - 0.5) in pixel-centre coordinates, the published station's camera poses, wrist cameras from FK of the
-measured joints; static images delivered turned by 180 deg. Isaac Lab renders ignore the principal point
-(`source="render"`: optical axis at the image centre), the evaluator's images do not (`source="evaluator"`).
-
-```bash
-# training data: the teacher runs episodes, the four cameras are captured at random rows (one variant per process)
-python scripts/render_perception_data.py --headless --device cpu --variant task2-3_cross_tower_transfer_3 \
-    --tiers D0 D1 --episodes 16 --num_envs 4 --seed 20000 --out data/perception/r1
-# organizer frames (evaluator renderer): fetch by range requests, then occlusion-aware labels from Isaac depth (GPU)
-python scripts/fetch_dataset_frames.py --variant <v> --skip 3 --episodes 5 --frames 40 --out data/perception/dataset_train
-python scripts/label_dataset_frames.py --headless --variant <v> --root data/perception/dataset_train
-python scripts/train_perception.py --train data/perception/r1 data/perception/dataset_train:3 \
-    --val data/perception/r1_val --iters 25000 --out results/perception/models/<name>
-# accuracy: single frames from a perturbed truth or the first call; whole organizer episodes at 10 Hz; in the loop
-python scripts/eval_perception.py --data data/perception/r1_val --checkpoint <model.pt> --mode prior --frames 400 \
-    --out results/perception/eval/<name>.json [--oracle] [--viz 8]
-python scripts/eval_perception_sequence.py --hdf5 data/episodes_full/data/<variant>/<episode>.hdf5 \
-    --checkpoint <model.pt> --out results/perception/eval/seq_<name>.json
-python scripts/rehearse.py --headless --device cpu --variant <v> --tiers D0 D1 --episodes 8 \
-    --bundle results/bundles/teacher_t45_final --perception <model.pt>   # or "oracle": splatted true heatmaps, CPU
-# (writes perception.json and the per-call log perception_log.pkl; the D1 case "lighting" changes the rendered light)
-# watch it: one mp4 per episode, a frame per estimator call (the four cameras with every estimated block coloured by
-# its state, the truth where > 2 mm off; tower_rl.perception.video); --live without --headless: the Isaac Sim window
-python scripts/rehearse.py --headless --device cpu --variant <v> --tiers D0 --episodes 1 --num_envs 1 --seed 7000 \
-    --bundle results/bundles/teacher_t45_final --perception <model.pt> --video results/perception/videos [--video_maps]
-python scripts/check_camera_model.py --episode data/subset/<v>/<stem>.npz --frames_dir <jpeg dir> --frames 0 \
-    --out results/perception/calib/<name>   # projected recorded poses on organizer JPEGs: shift ~(0, 0)
-```
-
-## Development
-
-### Layout
-
-| Path | Contents |
-|---|---|
-| `tower_rl/paths.py` | Repository paths and episode lookup; no Isaac imports, usable before the app starts |
-| `tower_rl/scene.py` | Scene config (station, arms with evaluator actuators, blocks, evaluator cameras) and playback helpers |
-| `scripts/play_episode.py` | Visualization and open-loop playback |
-| `scripts/validate_isaaclab_scene.py` | Validation and benchmarks (`inspect`, `fk`, `replay`, `bench`, `render`, `render_bench`) |
-| `scripts/make_meter_assets.py` | Builds the meter-unit station and block wrappers in `assets_m/` |
-| `scripts/smoke_native_isaacsim.py` | Opens a published task layer natively (mm stage) in plain Isaac Sim |
-| `scripts/peek_hdf5_remote.py`, `fetch_frames_remote.py`, `extract_meta_remote.py` | Read TOWER-SimData over HTTP range requests (one episode's arrays, single JPEG frames, metadata of many episodes) |
-| `scripts/inspect_station.py`, `inspect_xforms.py` | Static USD inspection with plain `pxr` |
-| `tower_rl/geometry.py`, `kinematics.py`, `control.py` | Torch rigid-body math, Nero FK / Jacobian / DLS IK / gravity model, 10 Hz arm + gripper controllers (no Isaac imports) |
-| `tower_rl/data/` | Episode files, remote reads, gripper events, layouts, success semantics, demo grasp geometry |
-| `tower_rl/{tower,domain,grasp,postures}.py` | Tower sampling per stage and tier, domain samples, canonical gripper poses, IK posture priors |
-| `tower_rl/sim/` | Isaac Lab asset configs, light skill scene, layout-driven station scene + `StationWorld` runtime |
-| `tower_rl/eval/` | Metrics (TSR/GSR/PSR/LHPR/ODR), operation tracker, chunked runner, perception-noise model |
-| `tower_rl/skills/` | Skill envs (`grasp_lift`, `place_release`), shared actor observations, transit planner, PPO config, TorchScript export |
-| `tower_rl/graph/` | `State`/`SkillCall` interface, graph builder + JSONs, executor, rehearsal reports |
-| `tower_rl/perception/` | Pose estimator: camera models, box geometry and labels, training data, keypoint network, multi-view fit, closed-loop observer |
-| `configs/` | Physics, scene, tiers, robot model, layouts, skill YAMLs (every scoring-relevant tunable) |
-| `BUILDLOG.md` | Dated build log: acceptance numbers and deviations from the build instructions |
-
-Scripts put the repository root on `sys.path`, so nothing needs to be pip-installed. Isaac Lab modules (and therefore
-`tower_rl.scene`) can only be imported after `AppLauncher` has started the app; follow the pattern at the top of
-`scripts/play_episode.py` in new scripts.
-
-### Conventions
-
-- Meters, radians, seconds. Scene frame = station frame: tabletop surface at z = 0, worktop spans x 0..0.96,
-  y -0.66..0; robot roots at left (-0.1165, -0.288, 0) and back (0.381, -0.774, 0).
-- Quaternions: the dataset stores `x y z qx qy qz qw`, Isaac Lab uses `(w, x, y, z)`.
-- Arm order is always `left` (station `StandA_Robot`) then `back` (`StandB_Robot`). A recorded arm state is 8 values
-  (7 joints + gripper opening width in m); `q16` stacks both arms. Each simulated arm has 10 DOFs: 7 joints, a passive
-  `gripper` joint and two fingers driven to +-width/2 (`tower_rl.scene.arm_q_full`).
-- Timing: 120 Hz physics, 30 Hz commands held for 4 substeps; the challenge executes 10 Hz or 30 Hz action chunks.
-- Drive parameters come from the episode metadata (`Episode.readback`, identical in all 331 Task1-3 episodes) and are
-  stored in millimetre-stage units: `actuators_from_readback` multiplies angular quantities by 1e-6 and linear forces
-  and velocities by 1e-3.
-- Files under `data/` are downloads: run scripts that parse them directly with `python -I`.
-
-### Checking changes
-
-After changing the scene, assets or physics, rerun the two validation commands above and compare with these
-reference values (RTX A5000, deterministic on the same machine):
-
-- `fk`: `link7` offset std <= 0.0001 mm for both arms over 61 frames.
-- `replay` on `t33_ep`: final block errors 1.04 / 0.24 / 0.02 mm (`source_l1/l2/l3_center`), distances to goal
-  4.01 / 4.79 / 3.38 mm.
-
-### Kit notes
-
-- `SimulationApp.close()` can hang or segfault after the work is done; scripts write their outputs and call
-  `os._exit(0)`. Flush prints (`flush=True`) or they are lost.
-- One Isaac Sim app per process. The first launch after a driver or extension change rebuilds shader caches and is
-  slow.
-- Cameras need `--enable_cameras` (`--video` sets it). Headless runs without cameras cannot apply RTX settings, which
-  is why the render settings are only passed when rendering.
-- Memory: 1024 physics-only envs run at ~116k physics steps/s; with the four evaluator cameras, 64 envs at 160x120
-  fit and 128 run out of the 62 GB host RAM with the full-detail station.
-
-## Findings that the environment must respect
-
-- The station USDZ is in millimetres; robots and blocks inside carry a x1000 scale. Isaac Lab disables Kit's unit
-  correction, so the wrapper applies an explicit 0.001 scale.
-- Five prims use `!resetXformStack!` (both robot stands, `InstalledRobots`, curtains, lighting). Without the wrapper's
-  replacement matrices, robot colliders are cooked 1000x too large and every env's robots sit at the world origin.
-- Gripper prismatic limits are authored in world millimetres; the wrapper converts them to meters.
-- The finger friction material lives outside the station's default prim, so references drop it. Replays match the
-  data with finger friction ~1.2/1.0 (`--finger_friction`); the default 0.5 makes blocks slip.
-- The block collision hull has two stray vertices, so towers rock and creep 1-3 mm; the evaluator data shows the same.
-- Evaluator dynamics: physics 120 Hz, 30 Hz zero-order-hold commands, delays left 5 ms / back 10 ms (one substep fits
-  best), finger PD 800 / 20 with a 22 N effort limit.
-- `observations/eef` is the `link7` frame in the `base_link` frame. Cameras: `left_back_camera` = station
-  `low_camera`, `right_front_camera` = `high_camera` (stored rotated 180 deg), wrist cameras on `gripper_base`.
-- The challenge-task USDA files are runtime-generated stubs; layouts and goals come from the SimData metadata
-  (`sim/block_poses`, `target_mapping`).
-- Data revisions: TOWER-Assets `538d8b1`, TOWER-SimData `1a59248` (same files as the docs-pinned `5ad6adc9`).
-- **The evaluator runs CPU PhysX.** Open-loop replays on CPU reproduce the recordings (final block poses within 0.9 mm);
-  GPU PhysX makes the keel-hulled blocks creep up to 15 mm (top cross blocks). Train on GPU, rehearse / evaluate on
-  CPU (`--device cpu`).
-- The massless passive `gripper_link` gets PhysX's default 1 kg; with the soft evaluator gains the back elbow sags
-  0.085 rad at rest. All controllers command `q_des - tau_g(q_des) / kp` (`ArmKinematics.sag_compensated_command`).
-- The pinch point is `gripper_base + (0, 0, 0.178)`; demos grasp centred, jaw across the block's width, approach
-  tilted 12 deg (left) / 5.5 deg (back) about the jaw axis; via-points at 6 cm (pre-grasp) and 5 cm (pre-place).
-- 10 Hz rows are held 0.1 s: replaying the demos at 10 Hz drops blocks in transport (fine at 30 Hz).
+The evaluator needs a public `wss://` URL, for example `cloudflared tunnel --no-autoupdate --url
+http://127.0.0.1:9001`. Logs go to `results/student/server/review/`.
