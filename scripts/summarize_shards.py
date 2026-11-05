@@ -14,10 +14,10 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tower_rl.student.logging import load_shards  # noqa: E402
-from tower_rl.student.spec import OPTIONS  # noqa: E402
+from tower_rl.student.tokens import OPTIONS_V2  # noqa: E402  (v1 label indices are a prefix of v2's)
 
 FAMILY = {"task1": "transfer", "task2": "transfer", "task3": "transfer", "task4": "pushdown", "task5": "insertion"}
-SOURCES = ("oracle", "switcher", "explore", "inject")
+from tower_rl.student.logging import SOURCES  # noqa: E402
 
 
 def main():
@@ -27,12 +27,12 @@ def main():
     args = ap.parse_args()
     rep = {}
     for root in args.roots:
-        d, idx = load_shards(root)
+        d, idx = load_shards(root, None)
         dec = d["kind"] == 0
         fam = np.array([FAMILY[idx[e]["variant"][:5]] for e in d["ep"]])
         r = {"episodes": len(idx), "rows": int(len(dec)), "decisions": int(dec.sum()), "progress_samples": int((~dec).sum()),
              "nonnominal_share": round(float(d["nonnominal"][dec].mean()), 4) if dec.any() else None,
-             "by_family": {}, "labels": dict(Counter(OPTIONS[i] for i in d["label_opt"][dec])),
+             "by_family": {}, "labels": dict(Counter(OPTIONS_V2[i] for i in d["label_opt"][dec])),
              "sources": dict(Counter(SOURCES[s] for s in d["source"][dec])), "by_cell": {}}
         for f in sorted(set(fam)):
             m = dec & (fam == f)

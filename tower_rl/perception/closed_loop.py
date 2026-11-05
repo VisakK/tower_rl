@@ -47,13 +47,42 @@ class CameraPerception:
         self.light_log = []
         self.video = None  # optional tower_rl.perception.video.EpisodeVideos: a frame per call (network mode)
         self.cases = []
+        self.orient = None     # set_official_orient: per env OrientationChooser
+        self.orient_log: list[dict] = []
+
+    def set_official_orient(self, refs: dict):
+        """Deliver the fixed cameras of Tasks 1-3 unrotated (as the official evaluator does, Lessons-v1 §3) and turn
+        them back with the adapter's per-episode orientation choice (``tower_rl.perception.orient``)."""
+        from tower_rl.perception.orient import OrientationChooser
+
+        self.orient = [OrientationChooser(refs) for _ in self.est]
 
     def reset(self, variant: str, seeds: list[int]):
         for est in self.est:
             est.reset(variant)
         self.seeds = seeds
+        if self.orient is not None:
+            for ch in self.orient:
+                ch.reset()
         if self.video is not None:
             self.video.close()
+
+    def _delivered(self, e: int, rgb: dict) -> dict:
+        """Env e's four images in kp_v2's convention (``deliver``), or, with ``set_official_orient``, as the official
+        evaluator delivers them and then through the orientation choice."""
+        im = {n: deliver(n, rgb[n][e]) for n in CAMERA_IDS}
+        if self.orient is None:
+            return im
+        from tower_rl.perception.orient import FIXED, fallback_rotate
+
+        variant = self.est[e].variant
+        if fallback_rotate(variant):  # official run 1: Tasks 1-3's fixed cameras arrive unrotated (the raw capture)
+            im = {n: (np.ascontiguousarray(np.rot90(a, 2)) if n in FIXED else a) for n, a in im.items()}
+        ch = self.orient[e]
+        if not ch.decided:
+            info = ch.decide(variant, im)
+            self.orient_log.append({"seed": self.seeds[e], "variant": variant, **info})
+        return ch.apply(im)
 
     def set_domain(self, world, dom):
         """Apply the episodes' lighting (robustness case "lighting") to the rendered station lights."""
@@ -95,7 +124,8 @@ class CameraPerception:
                 cam = world.scene[key]
                 cam.update(0.0, force_recompute=True)
                 rgb[name] = cam.data.output["rgb"][..., :3].cpu().numpy()
-            x = torch.stack([torch.as_tensor(np.ascontiguousarray(deliver(n, rgb[n][e]))) for e in envs for n in CAMERA_IDS])
+            dl = {e: self._delivered(e, rgb) for e in envs}
+            x = torch.stack([torch.as_tensor(np.ascontiguousarray(dl[e][n])) for e in envs for n in CAMERA_IDS])
             cm, em, mm, hm = self.est[0].heatmaps_batch(x)  # one forward pass for every requesting env's four images
         out = []
         for k, (e, s) in enumerate(zip(envs, states)):
@@ -197,6 +227,11 @@ class CameraPerception:
         ok = conf >= 0.5
         out = {"calls": len(self.log), "all": st(np.ones_like(ok)), "confident": st(ok), "foundations": st(ok & fixed),
                "movable_static": st(ok & ~fixed & ~held), "held": st(ok & held)}
+        if self.orient_log:  # set_official_orient: the per-episode choices
+            out["orient"] = {"episodes": len(self.orient_log), "rotated": sum(r["rotate"] for r in self.orient_log),
+                             "by_correlation": sum(r["how"] == "correlation" for r in self.orient_log),
+                             "min_winner": min(max(r["same"] or 0, r["rot180"] or 0) for r in self.orient_log),
+                             "choices": self.orient_log}
         # the target block of each call's node, per skill (what the skill acts on)
         tgt = [(r.get("skill"), r["err_mm"][r["block"]], r["err_deg"][r["block"]]) for r in self.log if r.get("block") is not None]
         for sk in sorted({t[0] for t in tgt}):

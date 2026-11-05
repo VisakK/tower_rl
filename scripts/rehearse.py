@@ -55,6 +55,10 @@ parser.add_argument("--inject", type=float, default=0.0, help="with --student: p
                                                              "injection (configs/student/collect.yaml inject; data collection)")
 parser.add_argument("--beta", type=float, default=None, help="with --student <switcher.pt> --collect: the state-mode oracle "
                                                            "acts with this probability per decision (DAgger)")
+parser.add_argument("--features", default="v1", help="with --student <oracle> --collect: the token version of the rows "
+                                                     "(v2: the recovery node's contracts, labels from oracle_state_v2)")
+parser.add_argument("--inject_set", default="{}", help='JSON merged into configs/student/collect.yaml inject per option, '
+                                                       'e.g. {"push_off": {"stop_r_m": [0.125, 0.15], "short_frac": 0.35}}')
 parser.add_argument("--distill_collect", default=None, help="student plan Step 9c: run the planned Task 5 nodes under DART "
                                                             "noise and write distillation shards under this dir "
                                                             "(tower_rl.student.distill)")
@@ -72,6 +76,14 @@ parser.add_argument("--video_maps", action="store_true", help="videos also show 
                                                              "corner peaks (yellow)")
 parser.add_argument("--live", action="store_true", help="render the stage after every row: run without --headless to "
                                                         "watch in the Isaac Sim window (use --num_envs 1)")
+parser.add_argument("--mirror", action="store_true", help="the official mirror (Plan-v1.1 §2.2): every episode runs to "
+                                                          "--max_time_s and is judged on its final arrangement; Task 4 "
+                                                          "pushes judged on their rest states (tower_rl.eval.mirror); "
+                                                          "dirs get _mirror")
+parser.add_argument("--official_orient", action="store_true", help="with --perception <model.pt>: deliver the fixed "
+                                                                    "cameras of Tasks 1-3 unrotated, as the official "
+                                                                    "evaluator does, and let the adapter's orientation "
+                                                                    "choice (tower_rl.perception.orient) turn them back")
 parser.add_argument("--case", nargs="+", default=None, help="force the tier's robustness case(s) (configs/tiers.yaml; D1: "
                                                             "nominal lightweight heavy uneven_weights slippery high_friction "
                                                             "shifted_assembly irregular_layers lighting combined): episode j "
@@ -102,6 +114,7 @@ from isaaclab.scene import InteractiveScene  # noqa: E402
 from tower_rl.config import load_yaml  # noqa: E402
 from tower_rl.domain import DomainSampler  # noqa: E402
 from tower_rl.eval.metrics import aggregate  # noqa: E402
+from tower_rl.eval.operations import OpCfg  # noqa: E402
 from tower_rl.eval.perception_noise import NoiseCfg  # noqa: E402
 from tower_rl.eval.runner import run_batch  # noqa: E402
 from tower_rl.graph.executor import Executor  # noqa: E402
@@ -127,7 +140,8 @@ for variant in [args.variant]:
 
         policy = StudentExecutor.from_bundle(args.bundle, variant, device=str(world.dev), rate_hz=args.rate_hz,
                                              decider=make_decider(args.student), collect=bool(args.collect),
-                                             explore_eps=args.explore, beta=args.beta, p_inject=args.inject)
+                                             explore_eps=args.explore, beta=args.beta, p_inject=args.inject,
+                                             features=args.features, inject_set=json.loads(args.inject_set))
     else:
         policy = Executor.from_bundle(args.bundle, variant, device=str(world.dev), rate_hz=args.rate_hz)
     policy.graph.update(json.loads(args.graph_set))
@@ -156,6 +170,12 @@ for variant in [args.variant]:
 
         observe = CameraPerception(args.perception, args.num_envs, device=args.perception_device)
         observe.policy = policy
+        if args.official_orient:
+            from tower_rl.paths import RESULTS_DIR as _R
+            from tower_rl.perception.orient import load_refs
+
+            observe.set_official_orient(load_refs(Path(args.bundle or "") / "perception" / "orient_refs.npz")
+                                        or load_refs(_R / "perception" / "orient_refs.npz"))
         if args.video:
             from tower_rl.perception.video import EpisodeVideos
 
@@ -174,6 +194,7 @@ for variant in [args.variant]:
     for tier in args.tiers:
         if observe is not None:
             observe.log = []
+            observe.orient_log = []
             if observe.video is not None:
                 observe.video.tier = tier
         sampler = DomainSampler(tier, device=world.dev, max_blocks=max(6, world.spec.num_movable))
@@ -189,14 +210,16 @@ for variant in [args.variant]:
             case = [args.case[(b * args.num_envs + e) % len(args.case)] for e in range(args.num_envs)] if args.case else None
             outs = run_batch(world, policy, sampler, seed=args.seed + 100 * b, max_time_s=args.max_time_s, rate_hz=args.rate_hz,
                              noise=noise_model or (NoiseCfg(**json.loads(args.noise)) if args.perception_noise else None),
-                             observe=observe, case=case)
+                             observe=observe, case=case, full_episode=args.mirror,
+                             op_cfg=OpCfg(push_rule="rest") if args.mirror else None)
             if args.collect:
                 from tower_rl.student.logging import write_batch
 
                 write_batch(args.collect, policy, outs[: args.episodes - b * args.num_envs], variant, tier, args.seed + 100 * b,
                             {"round": Path(args.collect).name, "decider": args.student, "bundle": args.bundle,
                              "beta": args.beta, "explore": args.explore, "inject": args.inject, "est_noise": args.est_noise,
-                             "graph_set": json.loads(args.graph_set)})
+                             "graph_set": json.loads(args.graph_set), "inject_set": json.loads(args.inject_set),
+                             "mirror": args.mirror, "features": args.features})
             if collector is not None:
                 from tower_rl.student.distill.data import write_batch as write_distill
 
@@ -214,6 +237,8 @@ for variant in [args.variant]:
                                                                                  + ("_estnoise" if args.est_noise else "")
                                                                                  + (f"_student-{Path(args.student).stem}" if args.student else "")
                                                                                  + ("_shadow" if args.shadow else "")
+                                                                                 + ("_mirror" if args.mirror else "")
+                                                                                 + ("_orient" if args.official_orient else "")
                                                                                  + ("_case-" + "-".join(args.case) if args.case else ""))
         cfg = {"variant": variant, "tier": tier, "episodes": args.episodes, "seed": args.seed, "bundle": args.bundle,
                "perception_noise": args.perception_noise, "noise": json.loads(args.noise),
@@ -222,7 +247,7 @@ for variant in [args.variant]:
                "graph_set": json.loads(args.graph_set), "perception": args.perception, "student": args.student,
                "collect": args.collect, "explore": args.explore, "beta": args.beta, "est_noise": args.est_noise, "inject": args.inject, "shadow": args.shadow,
                "distill_collect": args.distill_collect, "dart_scale": args.dart_scale if args.distill_collect else None,
-               "case": args.case}
+               "case": args.case, "mirror": args.mirror, "official_orient": args.official_orient}
         path = write_report(outcomes, out_dir, f"{variant} / {tier}", cfg)
         if noise_model is not None and noise_model.keep_log:
             import pickle

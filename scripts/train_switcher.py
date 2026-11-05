@@ -23,16 +23,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tower_rl.config import config_hash, load_yaml  # noqa: E402
 from tower_rl.student.logging import load_shards  # noqa: E402
 from tower_rl.student.switcher import Normalizer, SwitcherNet, export, loss_fn  # noqa: E402
-from tower_rl.student.tokens import FEATURES  # noqa: E402
+from tower_rl.student.tokens import DIMS, FEATURES  # noqa: E402
 
 KEYS = ("blk", "blk_mask", "goal", "goal_mask", "arm", "glob", "valid_opt", "valid_goal", "valid_arm", "label_opt",
         "label_goal", "label_arm", "kind", "progress", "nonnominal")
 
 
-def load(rounds: list[str]) -> tuple[dict, list]:
+def load(rounds: list[str], features: str = FEATURES) -> tuple[dict, list]:
     parts, index = [], []
     for r in rounds:
-        d, idx = load_shards(r)
+        d, idx = load_shards(r, features)
         d["ep"] = d["ep"] + len(index)  # episode ids unique over rounds
         if "nonnominal" not in d:
             d["nonnominal"] = np.zeros(len(d["kind"]), dtype=np.int64)
@@ -108,16 +108,20 @@ def main():
     ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--progress_frac", type=float, default=1.0, help="share of the progress-only rows used per epoch "
                                                                      "(all decision rows always; CPU training)")
+    ap.add_argument("--features", default=None, help="token version (default: configs/student/switcher.yaml's); v2 = "
+                                                     "the recovery node's contracts and the repush option (Plan-v1.1 §5.4)")
     args = ap.parse_args()
     torch.set_num_threads(args.threads)
     cfg = load_yaml("student/switcher")
-    assert cfg["features"] == FEATURES, (cfg["features"], FEATURES)
+    features = args.features or cfg["features"]
+    assert features in DIMS, features
+    cfg = dict(cfg, features=features)
     tr_cfg = dict(cfg["train"])
     if args.epochs:
         tr_cfg["epochs"] = args.epochs
     torch.manual_seed(args.seed)
     rng = np.random.default_rng(args.seed)
-    data, index = load(args.data)
+    data, index = load(args.data, features)
     ok = check_labels(data)
     print(f"rows {len(ok)} ({int((data['kind'] == 0).sum())} decisions), episodes {len(index)}, rows with invalid labels "
           f"dropped: {int((~ok).sum())}", flush=True)
@@ -125,10 +129,12 @@ def main():
     val_eps = set(rng.choice(eps, size=max(1, int(round(tr_cfg["val_frac"] * len(eps)))), replace=False).tolist())
     is_val = np.array([e in val_eps for e in data["ep"]]) & ok
     tr_idx, va_idx = np.flatnonzero(~is_val & ok), np.flatnonzero(is_val)
-    stats = Normalizer.fit({k: data[k][tr_idx] for k in ("blk", "blk_mask", "goal", "goal_mask", "arm", "glob")})
+    stats = Normalizer.fit({k: data[k][tr_idx] for k in ("blk", "blk_mask", "goal", "goal_mask", "arm", "glob")},
+                           dims=DIMS[features])
     m = cfg["model"]
     dev = torch.device(args.device)
-    net = SwitcherNet(m["d_model"], m["layers"], m["heads"], m.get("ff", 3 * m["d_model"]), m["dropout"], stats=stats).to(dev)
+    net = SwitcherNet(m["d_model"], m["layers"], m["heads"], m.get("ff", 3 * m["d_model"]), m["dropout"], stats=stats,
+                      features=features).to(dev)
     opt = torch.optim.AdamW(net.parameters(), lr=tr_cfg["lr"], weight_decay=tr_cfg["weight_decay"])
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -162,10 +168,11 @@ def main():
             best = (ev["acc"], ep)
             torch.save({"state": net.state_dict(), "stats": stats, "model": m, "epoch": ep}, out / "best.pt")
     ck = torch.load(out / "best.pt", map_location="cpu")
-    net = SwitcherNet(m["d_model"], m["layers"], m["heads"], m.get("ff", 3 * m["d_model"]), m["dropout"], stats=stats)
+    net = SwitcherNet(m["d_model"], m["layers"], m["heads"], m.get("ff", 3 * m["d_model"]), m["dropout"], stats=stats,
+                      features=features)
     net.load_state_dict(ck["state"])
     final = {"train": evaluate(net, data, tr_idx[: 20000], torch.device("cpu")), "val": evaluate(net, data, va_idx, torch.device("cpu"))}
-    meta = {"model": m, "train": tr_cfg, "data": args.data, "episodes": len(index), "rows": int(len(ok)),
+    meta = {"model": m, "train": tr_cfg, "features": features, "data": args.data, "episodes": len(index), "rows": int(len(ok)),
             "best_epoch": int(ck["epoch"]), "val": final["val"], "config_hash": config_hash(cfg),
             "written": datetime.datetime.now().isoformat(timespec="minutes"), "val_episodes": sorted(int(e) for e in val_eps)}
     export(net, out / "switcher.pt", meta)

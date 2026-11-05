@@ -16,20 +16,20 @@ import numpy as np
 
 from tower_rl.student.tokens import FEATURES, MAX_GOALS, encode
 
-SOURCES = ("oracle", "switcher", "explore", "inject")
+SOURCES = ("oracle", "switcher", "explore", "inject", "recovery")
 TOKEN_KEYS = ("blk", "blk_mask", "goal", "goal_mask", "arm", "glob", "valid_opt", "valid_goal", "valid_arm")
 
 
 def row(tokens: dict, kind: int, label=None, executed=None, source: str = "oracle", beta: float | None = None,
-        t: float = 0.0, priv: dict | None = None) -> dict:
+        t: float = 0.0, priv: dict | None = None, features: str = FEATURES) -> dict:
     """One shard row: a decision (kind 0) or a progress-only sample (kind 1)."""
     priv = priv or {}
     ops = priv.get("ops")
     prog = np.full(MAX_GOALS, -1, dtype=np.int8)
     if ops is not None:
         prog[:len(ops)] = np.asarray(ops, dtype=np.int8)
-    lo, lg, la = encode(label) if label is not None else (-1, -1, -1)
-    eo, eg, ea = encode(executed) if executed is not None else (-1, -1, -1)
+    lo, lg, la = encode(label, features) if label is not None else (-1, -1, -1)
+    eo, eg, ea = encode(executed, features) if executed is not None else (-1, -1, -1)
     r = {k: tokens[k] for k in TOKEN_KEYS}
     r.update(kind=kind, label_opt=lo, label_goal=lg, label_arm=la, exec_opt=eo, exec_goal=eg, exec_arm=ea,
              source=SOURCES.index(source) if kind == 0 else -1, beta=-1.0 if beta is None else float(beta),
@@ -45,20 +45,21 @@ def write_batch(root: str | Path, policy, outcomes: list, variant: str, tier: st
     out = root / variant / tier / f"b{batch_seed}.npz"
     out.parent.mkdir(parents=True, exist_ok=True)
     rows, eps = [], []
+    features = getattr(policy.runs[0], "features", FEATURES) if policy.runs else FEATURES
     for e, o in enumerate(outcomes):
         run = policy.runs[e]
         for r in run.rows:
             r["env"] = e
         rows += run.rows
         eps.append({"variant": variant, "tier": tier, "case": o.extra.get("case"), "seed": o.extra.get("seed"),
-                    "batch": batch_seed, "env": e, "features": FEATURES, **meta, "shard": str(out.relative_to(root)),
+                    "batch": batch_seed, "env": e, "features": features, **meta, "shard": str(out.relative_to(root)),
                     "rows": len(run.rows), "task_success": bool(o.task_success), "grasp_ok": list(o.grasp_ok),
                     "place_ok": list(o.place_ok), "disturbed_per_op": list(o.disturbed_per_op),
                     "duration_s": o.duration_s, "decisions": run.memory.decisions, "masked": run.memory.masked})
     if not rows:
         return None
     arrays = {k: np.stack([r[k] for r in rows]) for k in rows[0]}
-    arrays["features"] = np.array(FEATURES)
+    arrays["features"] = np.array(features)
     np.savez_compressed(out, **arrays)
     with open(out.parent / "index.jsonl", "a") as f:
         for r in eps:
@@ -66,13 +67,18 @@ def write_batch(root: str | Path, policy, outcomes: list, variant: str, tier: st
     return out
 
 
-def load_shards(root: str | Path, features: str = FEATURES) -> tuple[dict, list[dict]]:
+def load_shards(root: str | Path, features: str | None = FEATURES) -> tuple[dict, list[dict]]:
     """All shards under ``root`` concatenated, with ``ep`` = the episode's row in the returned index (all
-    ``index.jsonl`` files under ``root``, sorted); refuses other feature versions."""
+    ``index.jsonl`` files under ``root``, sorted); refuses other feature versions (None: the index's own version)."""
     root = Path(root)
     index = []
     for f in sorted(root.glob("**/index.jsonl")):
         index += [json.loads(line) for line in open(f)]
+    if features is None:
+        found = {r.get("features", "v1") for r in index}
+        if len(found) > 1:
+            raise ValueError(f"{root}: mixed feature versions {sorted(found)}")
+        features = found.pop() if found else FEATURES
     ep_of = {(r["shard"], r["env"]): i for i, r in enumerate(index)}
     for i, r in enumerate(index):
         r["ep"] = i

@@ -53,8 +53,12 @@ class Injector:
                 inj = {"drop_after_rows": int(rng.integers(c["drop_after_rows"][0], c["drop_after_rows"][1] + 1))}
         elif d.option == "push_off":
             direction = nodes[0].get("direction", [1.0, 0.0, 0.0])
-            inj = {"target_shift": _across(rng, direction, c["lateral_m"])} if rng.random() < 0.6 else \
-                {"target_shift": [0.0, 0.0, -float(c["low_m"])]}
+            if "stop_r_m" in c and rng.random() < c.get("short_frac", 0.0):
+                # a push that stops short (the block left over the foundation footprint: the recovery node's re-push)
+                inj = {"stop_r_m": float(rng.uniform(*c["stop_r_m"]))}
+            else:
+                inj = {"target_shift": _across(rng, direction, c["lateral_m"])} if rng.random() < 0.6 else \
+                    {"target_shift": [0.0, 0.0, -float(c["low_m"])]}
         elif d.option in ("insert", "push_home"):
             direction = nodes[0].get("direction", [1.0, 0.0, 0.0])
             inj = {"slot_shift": _across(rng, direction, c["across_m"])} if rng.random() < 0.6 else \

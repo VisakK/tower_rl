@@ -100,6 +100,11 @@ class StudentModels:
         self.hold_calls = hold_until_confident_calls
         self.net = load_net(str(self.bundle / "perception" / "kp_v2.pt"), torch.device(device))
         self.decider = SwitcherDecider.load(self.bundle / "student" / "switcher.pt")
+        # student_v1_1: the fixed cameras' orientation is chosen per episode against these references (absent in
+        # student_v1, whose adapter uses the images as delivered)
+        from tower_rl.perception.orient import load_refs
+
+        self.orient_refs = load_refs(self.bundle / "perception" / "orient_refs.npz") or None
         self.bounds = (np.asarray(track["action_lower"], dtype=np.float64), np.asarray(track["action_upper"], dtype=np.float64))
 
     def estimator(self):
@@ -111,7 +116,8 @@ class StudentModels:
         from tower_rl.student.adapter import StudentAdapter
 
         return StudentAdapter(str(self.bundle), self.decider, self.estimator, bounds=self.bounds,
-                              hold_until_confident_calls=self.hold_calls, log=log, recorder=recorder)
+                              hold_until_confident_calls=self.hold_calls, log=log, recorder=recorder,
+                              orient_refs=self.orient_refs)
 
     def warm_up(self, variant: str = "task2-2_cross_tower_transfer_2"):
         """One network pass and one runtime build before the port opens (CUDA kernels, lazy imports): the first
@@ -223,11 +229,16 @@ class SessionModel:
         a = self.adapter
         out = {"session": self.session, "trial": self.trial, "seed": self.seed, "variant": self.variant,
                "written": datetime.now().isoformat(timespec="seconds"), "calls": a.calls, "errors": a.errors,
-               "clipped_values": a.clipped, "holds": self._holds, "timing_ms": {k: _pct(v) for k, v in self._stats.items()}}
+               "clipped_values": a.clipped, "holds": self._holds, "timing_ms": {k: _pct(v) for k, v in self._stats.items()},
+               "orient": a.orient_info, "blind": a.blind, "confident_calls": a.confident_calls}
         if a.policy is not None:
             m = a.policy.memory(0)
-            out.update(decisions=m.decisions, masked=m.masked, events=_jsonable(a.policy.episode_log(0)),
-                       options=_jsonable(m.option_log))
+            out.update(decisions=m.decisions, masked=m.masked, vetoed=getattr(m, "vetoed", 0),
+                       events=_jsonable(a.policy.episode_log(0)), options=_jsonable(m.option_log),
+                       vetoes=_jsonable(getattr(m, "vetoes", [])))
+            extra = a.policy.episode_extra(0) if hasattr(a.policy, "episode_extra") else {}
+            if extra.get("recovery") is not None:  # graph "recovery": the rule node's decisions and abstentions
+                out["recovery"] = _jsonable(extra["recovery"])
         return out
 
     def _write_summary(self):
@@ -247,7 +258,8 @@ class SessionModel:
             self._write_summary()
             a = self.adapter
             self.events("episode_end", session=self.session, trial=self.trial, variant=self.variant, calls=a.calls,
-                        errors=a.errors, holds=self._holds, total_ms=_pct(self._stats["total_ms"]))
+                        errors=a.errors, holds=self._holds, total_ms=_pct(self._stats["total_ms"]),
+                        orient=(a.orient_info or {}).get("rotate"), blind=a.blind)
         if self._f is not None:
             self._f.close()
             self._f = None

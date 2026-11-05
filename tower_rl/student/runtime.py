@@ -16,6 +16,21 @@ runtime applies the mechanical rules (safety filters, not decisions):
 
 Node events ``(t, node id, status, info)`` are logged exactly as the executor logs them, so a decider with the graph's
 semantics reproduces the executor's event sequence (gate G3a).
+
+Opt-in graph flags of ``student_v1_1`` (Plan-v1.1 §3.1; all off by default, so the teacher's parity is unchanged):
+* ``idle_chunk`` (int, default 1): idle emits up to this many hold rows per call (official episodes run to 210 s, and
+  one-row holds cost ~2 s of evaluator wall time each); the re-query time is unchanged (the last chunk is shortened);
+* ``blind_guard``: ``set_blind`` (called by the adapter when no movable block was ever confidently seen): the transfer
+  family runs the graph's plan (``Oracle("graph")``) with place verdicts taken as "ok"; other families only log it;
+* ``finished_guard``: once every goal's last stage ended ok, a goal option is vetoed (idle instead, counted in
+  ``memory.vetoed``) unless its block's rest estimate has moved > ``FINISHED_REOPEN_M`` from where it was when the goal
+  ended, for >= ``FINISHED_REOPEN_S`` (the switcher was trained to reopen goals that look disturbed, and official
+  episodes idle 100-160 s after the plan on fresh estimates);
+* ``recovery``: the student's recovery node (``tower_rl.recovery.rules.RecoveryNode`` on its rest estimates, gated by
+  perception health) may replace the decider's decision at each decision point (Plan-v1.1 §5.4 step 6: the rules
+  first, as an agent-authored safety filter; the switcher learns them later). Its decisions bypass the finished guard.
+  ``true`` or a dict of ``RecoveryNode`` options, e.g. ``{"seen_s": 15.0, "at_end": true}`` (sporadic confident
+  sightings suffice; R4.1 only once the plan is done and the tower empty).
 """
 
 from __future__ import annotations
@@ -33,14 +48,17 @@ from tower_rl.graph.interface import ARMS, State, Status
 from tower_rl.student.inject import Injector
 from tower_rl.student.logging import row as collect_row
 from tower_rl.student.oracle import Oracle
-from tower_rl.student.spec import OPTIONS, TRANSPORT, WHY, Decision, TaskSpec
-from tower_rl.student.tokens import TokenTracker, action_masks, encode
+from tower_rl.student.spec import OPTIONS, RECOVERY_OPTIONS, RECOVERY_STAGE, TRANSPORT, WHY, Decision, TaskSpec
+from tower_rl.student.tokens import FEATURES, OPTION_SETS, TokenTracker, action_masks, encode
 
-GOAL_OPTIONS = ("acquire", "deliver", "push_off", "insert", "push_home")
+GOAL_OPTIONS = ("acquire", "deliver", "push_off", "insert", "push_home") + RECOVERY_OPTIONS
 IDLE_SPEC = {"id": "idle", "skill": "idle", "arm": None, "timeout_s": math.inf}
 CONTACT_NODES = (PlannedGraspNode, LearnedGraspNode, PlannedPlaceNode, LearnedPlaceNode, PushNode, InsertNode, PushInNode)
 GRIPPER_LIMITS = (0.0, 0.1)
 CLIP_TOL = 1e-6  # rows beyond the limits by less than this are float rounding, kept as they are
+FINISHED_REOPEN_M = 0.010  # finished_guard: a goal's block must have moved this far (rest estimate) ...
+FINISHED_REOPEN_S = 2.0    # ... for this long before a goal option may run after every goal ended ok
+FINAL_STAGE = {"transfer": "deliver", "pushdown": "push_off", "insertion": "push_home"}
 
 
 def why_category(status: Status, info: dict | None) -> str:
@@ -89,6 +107,8 @@ class Memory:
         self.arms = {a: ArmMemory() for a in ARMS}
         self.option_log: list[dict] = []
         self.decisions = 0
+        self.vetoed = 0     # goal options the finished guard turned into idle
+        self.vetoes: list[dict] = []
         self.masked = 0     # decisions the masks turned into idle
         self.clipped = 0    # action values the limits changed
         self.books: dict = {}  # the oracles' bookkeeping, by mode (never a token)
@@ -152,18 +172,21 @@ class View:
 
 # ---------------------------------------------------------------------- the per-env runtime
 class IdleNode:
-    """Hold the current command; end after ``requery_s`` of sim time (the runtime then asks the decider again)."""
+    """Hold the current command; end after ``requery_s`` of sim time (the runtime then asks the decider again). Emits up
+    to ``chunk`` rows per call (graph ``idle_chunk``), the last call only as many as reach ``requery_s``."""
 
     inserted = False
 
-    def __init__(self, run: StudentRun, s: State, requery_s: float):
+    def __init__(self, run: StudentRun, s: State, requery_s: float, chunk: int = 1, dt: float = 0.1):
         self.run, self.spec, self.arm, self.info = run, IDLE_SPEC, None, {}
-        self.t0, self.requery_s = s.t, requery_s
+        self.t0, self.requery_s, self.chunk, self.dt = s.t, requery_s, max(1, int(chunk)), dt
 
     def step(self, s: State):
-        if s.t - self.t0 >= self.requery_s - 1e-9:
+        left = self.requery_s - (s.t - self.t0)
+        if left <= 1e-9:
             return Status.OK, []
-        return None, [self.run.row()]
+        n = max(1, min(self.chunk, int(math.ceil(left / self.dt - 1e-6))))
+        return None, [self.run.row()] * n
 
 
 class StudentRun(EnvRun):
@@ -185,7 +208,8 @@ class StudentRun(EnvRun):
         self.rows: list[dict] = []
         self.calls = 0
         need_tokens = self.collect or getattr(self.decider, "needs_tokens", False)
-        self.tok = TokenTracker(self) if need_tokens else None
+        self.features = getattr(self.decider, "features", None) or ex.features  # the switcher's version, or collection's
+        self.tok = TokenTracker(self, self.features) if need_tokens else None
         self.perturbed = False  # an explored or injected option happened in this episode
         self.option_prev, self.idle_streak = None, 0
         self.rng = np.random.default_rng([seed, 991])  # exploration, injection, the DAgger mix: deterministic per episode
@@ -195,7 +219,29 @@ class StudentRun(EnvRun):
         # the tokens cannot tell those labels apart) and re-placed them 10-14 mm off (G7b: 1-3 D0 18 / 24 vs 24 / 24)
         self.keep_delivered = bool(self.g.get("keep_delivered", False))
         self.delivered: dict[int, np.ndarray] = {}
-        self.injector = Injector(load_yaml("student/collect")["inject"], ex.p_inject, self.rng) if ex.p_inject > 0 else None
+        icfg = dict(load_yaml("student/collect")["inject"])
+        for k, v in (ex.inject_set or {}).items():  # e.g. the short push of features v2 collection (rehearse --inject_set)
+            icfg[k] = dict(icfg.get(k, {}), **v)
+        self.injector = Injector(icfg, ex.p_inject, self.rng) if ex.p_inject > 0 else None
+        self.idle_chunk = int(self.g.get("idle_chunk", 1))
+        self.blind = False
+        self.finished_guard = bool(self.g.get("finished_guard", False))
+        self.goal_done: dict[int, np.ndarray] = {}   # finished_guard: goal -> its block's rest position when it ended ok
+        self.moved_since: dict[int, float] = {}      # finished_guard: goal -> sim time its block first moved > 10 mm
+        self.recovery = None
+        rec = self.g.get("recovery", False)
+        if rec and not self.exact:
+            from tower_rl.recovery.rules import RecoveryNode
+
+            self.recovery = RecoveryNode("estimate", **(rec if isinstance(rec, dict) else {}))
+
+    def set_blind(self):
+        """No movable block was ever confidently seen (adapter): the transfer family runs the graph's plan on the
+        nominal poses, a place verdict "failed" counting as "ok" (no retries on blind verdicts); other families keep their
+        decider (their outcomes cannot be judged blind either way)."""
+        self.blind = True
+        if self.spec.family == "transfer":
+            self.decider = Oracle("graph", exact=False)
 
     def holding(self, arm: str, s: State) -> bool:
         """The executor's holding test: the gripper is commanded closed and the measured opening is a block's width."""
@@ -214,10 +260,12 @@ class StudentRun(EnvRun):
             self.ready = True
         self.observe(s)
         self.calls += 1
+        if self.recovery is not None:
+            self.recovery.observe(View(self, s))
         if self.tok is not None:
             self.tok.observe(s)
             if self.collect and self.calls % self.ex.progress_every == 0:
-                r = collect_row(self.tok.tokens(View(self, s)), 1, t=s.t, priv=s.privileged)
+                r = collect_row(self.tok.tokens(View(self, s)), 1, t=s.t, priv=s.privileged, features=self.features)
                 r["nonnominal"] = int(self.perturbed or any(g.tries > 0 for g in self.memory.goals))
                 self.rows.append(r)
         rows: list[np.ndarray] = []
@@ -241,7 +289,7 @@ class StudentRun(EnvRun):
     def _make(self, s: State):
         spec = self.queue[0]
         if spec["skill"] == "idle":
-            return IdleNode(self, s, self.requery_s)
+            return IdleNode(self, s, self.requery_s, self.idle_chunk, 1.0 / self.ex.cfg.rate_hz)
         if not self.option.alt:  # the executor runs its arm-switch nodes without the arm_clear check
             other = next((a for a in ARMS if a != spec["arm"]), None)
             # an arm already parked (not moved since) cannot get further out of the way: re-parking it is a livelock
@@ -256,6 +304,9 @@ class StudentRun(EnvRun):
     def _node_done(self, status: Status, s: State):
         node, self.node = self.node, None
         spec = node.spec
+        if self.blind and status == Status.FAILED and spec["skill"] == "place_release" and "place_xy_mm" in (node.info or {}):
+            node.info = dict(node.info, blind_verdict="failed")  # blind: the verdict compares against nominal poses
+            status = Status.OK
         if spec["skill"] != "idle":
             self.events.append((round(s.t, 2), spec["id"], status.value, node.info))
         if getattr(node, "inserted", False):  # arm_clear park: the option continues with the node it preceded
@@ -274,6 +325,12 @@ class StudentRun(EnvRun):
     def _option_end(self, status: Status, s: State, spec: dict, info: dict):
         d = self.option
         self.memory.end(d, status, info, s.t)
+        if self.finished_guard and d is not None and d.option in GOAL_OPTIONS:
+            if status == Status.OK and RECOVERY_STAGE.get(d.option, d.option) == FINAL_STAGE[self.spec.family]:
+                self.goal_done[d.goal] = self.block_rest(s, self.spec.goals[d.goal].block)[0][0].cpu().numpy().copy()
+            else:
+                self.goal_done.pop(d.goal, None)
+            self.moved_since.pop(d.goal, None)
         if self.keep_delivered and d is not None and d.option == "deliver":
             if status == Status.OK:
                 self.delivered[d.goal] = self.block_rest(s, self.spec.goals[d.goal].block)[0][0].cpu().numpy().copy()
@@ -302,22 +359,34 @@ class StudentRun(EnvRun):
                 and self.rng.random() < self.ex.beta:
             d, source = label, "oracle"  # DAgger mixture: the expert acts with probability beta
         if self.ex.explore_eps > 0 and self.rng.random() < self.ex.explore_eps:
-            alt = self._alternative(d, tokens if tokens is not None else action_masks(view))
+            alt = self._alternative(d, tokens if tokens is not None else action_masks(view, self.features))
             if alt is not None:
                 d, source = alt, "explore"
+        if self.recovery is not None and not self.blind:
+            if self.recovery.contracts is None:
+                self.recovery.start(view)
+            rd = self.recovery.propose(view, d)
+            if rd is not None:
+                d = rd
+        if d.recovery:  # a recovery node's decision (the student's own, or the state oracle v2's)
+            source = "recovery"
+        if self.finished_guard and source != "recovery" and self._vetoed(d, s):
+            self.memory.vetoed += 1
+            self.memory.vetoes.append({"decision": d, "t": round(s.t, 2)})
+            d = Decision("idle")
         if not self.valid(d, view):
             self.memory.masked += 1
             d = Decision("idle")
         nodes = self.spec.option_nodes(d) or [dict(IDLE_SPEC)]
-        if self.injector is not None and d.option in GOAL_OPTIONS and self.injector.maybe(d, nodes) is not None \
-                and source != "explore":
+        if self.injector is not None and d.option in GOAL_OPTIONS and d.option not in RECOVERY_OPTIONS \
+                and source not in ("explore", "recovery") and self.injector.maybe(d, nodes) is not None:
             source = "inject"  # the expert's decision, executed with a perturbation (data collection)
         if source in ("explore", "inject"):
             self.perturbed = True
         self.idle_streak = self.idle_streak + 1 if (d.option == "idle" and self.option_prev == "idle") else 0
         self.option_prev = d.option
         if self.collect and self.idle_streak % 10 == 0:  # a long idle (after the end) is logged once per 10 re-queries
-            r = collect_row(tokens, 0, label, d, source, self.ex.beta, s.t, s.privileged)
+            r = collect_row(tokens, 0, label, d, source, self.ex.beta, s.t, s.privileged, features=self.features)
             # non-nominal: after a failed option, or after exploration / injection in this episode (weighted x5 in BC)
             r["nonnominal"] = int(self.perturbed or any(g.tries > 0 for g in self.memory.goals))
             self.rows.append(r)
@@ -328,11 +397,25 @@ class StudentRun(EnvRun):
         self.memory.start(d, s.t, source)
         self.queue = nodes
 
+    def _vetoed(self, d: Decision, s: State) -> bool:
+        """finished_guard: every goal ended ok, and ``d`` would rework goal k although its block has not stayed moved
+        (> FINISHED_REOPEN_M from where it rested when its goal ended) for FINISHED_REOPEN_S."""
+        if d.option not in GOAL_OPTIONS or len(self.goal_done) < self.spec.K:
+            return False
+        for k, p0 in self.goal_done.items():  # keep the per-goal "moved since" clocks current
+            now = self.block_rest(s, self.spec.goals[k].block)[0][0].cpu().numpy()
+            if float(np.linalg.norm(now - p0)) > FINISHED_REOPEN_M:
+                self.moved_since.setdefault(k, s.t)
+            else:
+                self.moved_since.pop(k, None)
+        t0 = self.moved_since.get(d.goal)
+        return t0 is None or s.t - t0 < FINISHED_REOPEN_S - 1e-9
+
     def _alternative(self, d: Decision, masks: dict) -> Decision | None:
         """A uniformly random valid decision other than ``d`` (exploration: another goal, the other arm, park, idle)."""
         cands = []
-        for oi, o in enumerate(OPTIONS):
-            if not masks["valid_opt"][oi]:
+        for oi, o in enumerate(OPTION_SETS[self.features]):
+            if not masks["valid_opt"][oi] or o in RECOVERY_OPTIONS:  # recovery only on its own preconditions
                 continue
             if o == "idle":
                 cands.append(Decision("idle"))
@@ -341,7 +424,7 @@ class StudentRun(EnvRun):
             else:
                 cands += [Decision(o, k, a) for k in range(self.spec.K) for ai, a in enumerate(ARMS)
                           if masks["valid_arm"][oi, k, ai]]
-        cands = [c for c in cands if encode(c) != encode(d)]
+        cands = [c for c in cands if encode(c, self.features) != encode(d, self.features)]
         return cands[int(self.rng.integers(len(cands)))] if cands else None
 
     def redo_blocked(self, k: int, s: State) -> bool:
@@ -410,12 +493,17 @@ class StudentExecutor(Executor):
 
     def __init__(self, variant: str, graph: dict | None = None, skills: dict | None = None, cfg=None, decider=None,
                  labeler=None, idle_requery_s: float | None = None, collect: bool = False, progress_every: int = 5,
-                 explore_eps: float = 0.0, beta: float | None = None, p_inject: float = 0.0):
+                 explore_eps: float = 0.0, beta: float | None = None, p_inject: float = 0.0, features: str = FEATURES,
+                 inject_set: dict | None = None):
         super().__init__(variant, graph, skills, cfg)
         self.decider = decider
         self.labeler = labeler
-        if collect and labeler is None:  # labels come from the state-mode oracle
-            self.labeler = decider if isinstance(decider, Oracle) and decider.mode == "state" else Oracle("state")
+        self.features = features      # token version when the decider does not set one (an oracle collecting rows)
+        self.inject_set = inject_set  # overrides of configs/student/collect.yaml inject (data collection)
+        if collect and labeler is None:  # labels come from the state-mode oracle (v2 rows: with its recovery node)
+            v2 = (getattr(decider, "features", None) or features) == "v2"
+            self.labeler = decider if isinstance(decider, Oracle) and decider.mode == "state" else \
+                Oracle("state", recovery=v2)
         self.collect, self.progress_every = collect, progress_every
         self.explore_eps, self.beta, self.p_inject = explore_eps, beta, p_inject
         self.idle_requery_s = idle_requery_s if idle_requery_s is not None else \
@@ -442,11 +530,25 @@ class StudentExecutor(Executor):
     def memory(self, e: int) -> Memory:
         return self.runs[e].memory
 
+    def episode_extra(self, e: int) -> dict:
+        """Per episode (the runner's outcome ``extra``): the recovery node's decisions and abstentions (the student's
+        own, or the state oracle v2's), the finished guard's vetoes, whether the episode ran blind."""
+        if e >= len(self.runs):
+            return {}
+        run = self.runs[e]
+        node = run.recovery or run.memory.books.get("recovery")
+        out = {"blind": run.blind, "vetoed": run.memory.vetoed}
+        if node is not None:
+            out["recovery"] = node.summary()
+        return out
+
 
 def make_decider(name: str):
     """``oracle_graph`` / ``oracle_state`` (``tower_rl.student.oracle``), or a switcher export (``*.pt``, Step 7)."""
     if name in ("oracle_graph", "oracle_state"):
         return Oracle(name.split("_", 1)[1])
+    if name == "oracle_state_v2":  # the teacher's recovery node (Plan-v1.1 §5.3)
+        return Oracle("state", recovery=True)
     from tower_rl.student.switcher import SwitcherDecider  # Step 7
     return SwitcherDecider.load(name)
 

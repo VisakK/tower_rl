@@ -30,6 +30,7 @@ State mode: the training expert (labels; reads simulator truth, so never deploya
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -39,6 +40,10 @@ from tower_rl.student.spec import TRANSPORT, Decision
 
 FELL_OFF_Z = -0.02  # a block below the table top: a re-grasp cannot reach it (executor rule)
 EPISODE_S = 210.0
+# state oracle v2 (recovery): a satisfied goal is reopened only once its block stood > 10 mm from where it was when the
+# goal closed for 2 s (the student's finished guard, StudentRun._vetoed): labels the student can see (the v1 rule
+# reopened on any tolerance violation, which the estimates cannot tell apart at 5 mm / 5 deg: G7b)
+REOPEN_MOVED_M, REOPEN_MOVED_S = 0.010, 2.0
 UNGRASPABLE_TILT_DEG = 15.0  # state mode: a block lying tilted (on its side, leaning) is not re-grasped (grasp times out)
 
 
@@ -55,16 +60,33 @@ class Book:
     arm: list = field(default_factory=list)           # state mode: per goal, the arm of its current attempt
     satisfied: set = field(default_factory=set)       # state mode: goals closed as satisfied (truth or verdict)
     reopened: set = field(default_factory=set)        # state mode: goals reopened once
+    closed_pos: dict = field(default_factory=dict)    # v2: goal -> its block's true position when it closed satisfied
+    moved_since: dict = field(default_factory=dict)   # v2: goal -> time its block first stood > 10 mm from there
 
 
 class Oracle:
-    def __init__(self, mode: str = "graph", reopen_min_left_s: float = 30.0, exact: bool | None = None):
+    def __init__(self, mode: str = "graph", reopen_min_left_s: float = 30.0, exact: bool | None = None,
+                 recovery: bool = False):
+        """``recovery`` (state mode): state oracle v2, the teacher's recovery node (``tower_rl.recovery.rules`` on
+        simulator truth, Plan-v1.1 §5.3) runs after the state oracle's decision at every decision point."""
         assert mode in ("graph", "state"), mode
+        assert not recovery or mode == "state", "the recovery node reads truth: state mode only"
         self.mode = mode
-        self.name = f"oracle_{mode}"
+        self.recovery = recovery
+        self.name = f"oracle_{mode}" + ("_v2" if recovery else "")
         self.reopen_min_left_s = reopen_min_left_s
         # graph mode asks the runtime to reproduce the executor exactly, its arm_clear livelock included (gate G3a)
         self.exact = (mode == "graph") if exact is None else exact
+
+    def recovery_node(self, view):
+        """The episode's recovery node (per run, in the memory's books: the oracle is shared by envs)."""
+        node = view.memory.books.get("recovery")
+        if node is None:
+            from tower_rl.recovery.rules import RecoveryNode
+
+            node = view.memory.books["recovery"] = RecoveryNode("truth")
+            node.start(view)
+        return node
 
     def book(self, view) -> Book:
         b = view.memory.books.get(self.mode)
@@ -76,7 +98,13 @@ class Oracle:
     # ------------------------------------------------------------------ decisions
     def decide(self, view) -> Decision:
         if self.mode == "state":
-            return self._decide_state(view)
+            d = self._decide_state(view)
+            if self.recovery:
+                node = self.recovery_node(view)
+                rd = node.propose(view, d)
+                if rd is not None:
+                    return rd
+            return d
         spec, b = view.spec, self.book(view)
         if b.plan:
             return b.plan[0]
@@ -140,17 +168,28 @@ class Oracle:
             if not b.closed[g.k] and ops[g.k] and not any(view.holds_goal(a, g.k) for a in ARMS):
                 b.closed[g.k] = True
                 b.satisfied.add(g.k)
+        if self.recovery:  # v2: where each satisfied goal's block stands since its goal closed (the reopen rule below)
+            for k in b.satisfied:
+                i = s.block_ids.index(spec.goals[k].block)
+                p0 = b.closed_pos.setdefault(k, pos[i].copy())
+                if float(np.linalg.norm(pos[i] - p0)) > REOPEN_MOVED_M:
+                    b.moved_since.setdefault(k, s.t)
+                else:
+                    b.moved_since.pop(k, None)
         if spec.family != "transfer" or EPISODE_S - s.t < self.reopen_min_left_s:
             return
         if any(view.holding(a) for a in ARMS):
             return  # finish what is in hand first: reopening now would make the held block's arm drop it
         for g in spec.goals:
-            if b.closed[g.k] and g.k in b.satisfied and not ops[g.k] and g.k not in b.reopened and \
+            moved = not self.recovery or s.t - b.moved_since.get(g.k, math.inf) >= REOPEN_MOVED_S - 1e-9
+            if b.closed[g.k] and g.k in b.satisfied and not ops[g.k] and g.k not in b.reopened and moved and \
                     self._accessible(view, pos, g.block) and self._tilt_deg(view, pos, g.block) <= UNGRASPABLE_TILT_DEG \
                     and self._can_regrasp(view, g):
                 b.closed[g.k] = False
                 b.satisfied.discard(g.k)
                 b.reopened.add(g.k)
+                b.closed_pos.pop(g.k, None)
+                b.moved_since.pop(g.k, None)
                 b.stage[g.k], b.tries[g.k] = 0, 0
 
     def _accessible(self, view, pos: np.ndarray, bid: str) -> bool:

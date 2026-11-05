@@ -41,6 +41,11 @@ parser.add_argument("--finger_friction", nargs=2, type=float, default=[2.4, 2.0]
 parser.add_argument("--finger_effort", type=float, default=None)
 parser.add_argument("--max_time_s", type=float, default=210.0)
 parser.add_argument("--out_root", required=True)
+parser.add_argument("--official_orient", action="store_true", help="deliver the fixed cameras of Tasks 1-3 unrotated, as "
+                                                                    "the official evaluator does (the v1.1 server turns "
+                                                                    "them back by its per-episode orientation choice)")
+parser.add_argument("--mirror", action="store_true", help="the official mirror, as rehearse.py --mirror: run every "
+                                                          "episode to --max_time_s, Task 4 judged on rest states")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 if "fsWatcherEnabled" not in (args.kit_args or ""):  # as rehearse.py: Kit's file watchers exhaust inotify
@@ -64,6 +69,8 @@ from tower_rl.eval.runner import run_batch  # noqa: E402
 from tower_rl.graph.rehearsal import write_report  # noqa: E402
 from tower_rl.perception.cameras import CAMERA_IDS, deliver  # noqa: E402
 from tower_rl.perception.closed_loop import CAM_KEY  # noqa: E402
+from tower_rl.perception.orient import FIXED, fallback_rotate  # noqa: E402
+from tower_rl.eval.operations import OpCfg  # noqa: E402
 from tower_rl.scene import EVAL_RENDER_CFG  # noqa: E402
 from tower_rl.server.tower_protocol import pack, unpack  # noqa: E402
 from tower_rl.sim.assets import sim_cfg  # noqa: E402
@@ -77,10 +84,11 @@ class RemoteObserve:
     """The four rendered cameras of the requesting envs, in the delivered orientation (as ``CameraPerception``),
     handed to ``RemotePolicy``; the states pass through unchanged (the server estimates the poses)."""
 
-    def __init__(self, subframes: int = 4):
+    def __init__(self, subframes: int = 4, official: bool = False):
         self.subframes = subframes
         self.images: dict[int, dict] = {}
         self.lights = None
+        self.official = official
 
     def reset(self, variant: str, seeds: list[int]):
         self.images = {}
@@ -105,6 +113,9 @@ class RemoteObserve:
             rgb[name] = cam.data.output["rgb"][..., :3].cpu().numpy()
         for e in envs:
             self.images[e] = {n: np.ascontiguousarray(deliver(n, rgb[n][e])) for n in CAMERA_IDS}
+            if self.official and fallback_rotate(variant):  # official run 1: Tasks 1-3 fixed cameras arrive unrotated
+                self.images[e] = {n: (np.ascontiguousarray(np.rot90(a, 2)) if n in FIXED else a)
+                                  for n, a in self.images[e].items()}
         return states
 
 
@@ -186,7 +197,7 @@ variant = args.variant
 scene = InteractiveScene(make_station_scene_cfg(variant, args.num_envs, cameras=True, finger_effort=args.finger_effort))
 sim.reset()
 world = StationWorld(scene, sim, variant, finger_friction=tuple(args.finger_friction))
-observe = RemoteObserve()
+observe = RemoteObserve(official=args.official_orient)
 policy = RemotePolicy(args.url, variant, observe)
 summary = {}
 for tier in args.tiers:
@@ -197,14 +208,18 @@ for tier in args.tiers:
     for b in range(nb):
         case = [args.case[(b * args.num_envs + e) % len(args.case)] for e in range(args.num_envs)] if args.case else None
         outs = run_batch(world, policy, sampler, seed=args.seed + 100 * b, max_time_s=args.max_time_s, rate_hz=10,
-                         observe=observe, case=case)
+                         observe=observe, case=case, full_episode=args.mirror,
+                         op_cfg=OpCfg(push_rule="rest") if args.mirror else None)
         outcomes += outs[: args.episodes - b * args.num_envs]
         done = aggregate(outcomes)
         print(f"[ws_loop] {variant} {tier} batch {b + 1}/{nb}: TSR {done['TSR']['value']:.2f} GSR {done['GSR']['value']:.2f} "
               f"PSR {done['PSR']['value']:.2f} ODR {done['ODR']['value']:.2f} ({time.time() - t0:.0f} s)", flush=True)
-    out_dir = Path(args.out_root) / variant / (tier + "_ws_loop" + ("_case-" + "-".join(args.case) if args.case else ""))
+    out_dir = Path(args.out_root) / variant / (tier + "_ws_loop" + ("_mirror" if args.mirror else "")
+                                               + ("_orient" if args.official_orient else "")
+                                               + ("_case-" + "-".join(args.case) if args.case else ""))
     conf = {"variant": variant, "tier": tier, "episodes": args.episodes, "seed": args.seed, "url": args.url,
-            "track": args.track, "finger_friction": args.finger_friction, "finger_effort": args.finger_effort, "case": args.case}
+            "track": args.track, "finger_friction": args.finger_friction, "finger_effort": args.finger_effort, "case": args.case,
+            "mirror": args.mirror, "official_orient": args.official_orient}
     path = write_report(outcomes, out_dir, f"{variant} / {tier} (ws_loop)", conf)
     lat = 1000 * np.asarray(policy.latency) if policy.latency else np.zeros(1)
     rep = {"calls": len(policy.latency), "latency_ms": {"mean": round(float(lat.mean()), 1), "p50": round(float(np.percentile(lat, 50)), 1),

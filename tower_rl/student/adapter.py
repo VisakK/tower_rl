@@ -13,6 +13,16 @@ left / back, radians; ``gripper_widths_m`` <f4 [2] full openings in metres; ``im
 RGB; ``task_variant``; ``instruction``; ``sim_time_s``; ``step_index`` = control actions already executed).
 ``recorder(record, images)``, if given, gets one dict per call (timings, hold reason, node, confidences, the estimated
 poses) and the call's images (the server's session log).
+
+v1.1 (Plan-v1.1 §2.1, §3.1; both off without their inputs, so ``student_v1`` behaves as before):
+* ``orient_refs`` (the bundle's ``perception/orient_refs.npz``): on the first call with images the fixed cameras'
+  orientation is chosen by correlation with the variant's reference frames and locked for the episode
+  (``tower_rl.perception.orient``); the estimator gets the fixed cameras turned into kp_v2's convention, the recorder
+  the images as delivered. The first call's record and ``orient_info`` hold the choice and both correlations.
+* blind guard (graph flag ``blind_guard``): when the runtime first acts and no movable block has been confidently seen
+  on any call so far (the evaluator rendered no blocks), the episode is BLIND: the transfer family runs the graph's plan
+  on the nominal poses with place verdicts taken as "ok" (``StudentRun.set_blind``; blind "failed" verdicts set off
+  retries that disturbed Task 1 in official run 1). ``blind`` is logged in the record and the summary either way.
 """
 
 from __future__ import annotations
@@ -24,6 +34,7 @@ import numpy as np
 
 from tower_rl.graph.interface import State
 from tower_rl.perception.cameras import CAMERA_IDS
+from tower_rl.perception.orient import OrientationChooser
 from tower_rl.student.runtime import StudentExecutor
 
 CLIP_TOL = 1e-6  # clips beyond this are counted (Isaac reports an open gripper at 0.10000002 m: not a mapping error)
@@ -55,15 +66,17 @@ def clip32(chunk: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> tuple[np.ndarra
 
 class StudentAdapter:
     def __init__(self, bundle: str, decider, make_estimator, bounds: tuple[np.ndarray, np.ndarray] | None = None,
-                 hold_until_confident_calls: int = 3, log=print, recorder=None):
+                 hold_until_confident_calls: int = 3, log=print, recorder=None, orient_refs: dict | None = None):
         """``decider``: the switcher (``SwitcherDecider``) or an oracle, shared by sessions (stateless per call);
         ``make_estimator()``: a fresh ``PoseEstimator`` (sharing the loaded network); ``bounds``: the track's action
-        lower / upper rows ``[16]`` (default: the runtime's joint / gripper limits)."""
+        lower / upper rows ``[16]`` (default: the runtime's joint / gripper limits); ``orient_refs``: the fixed
+        cameras' reference frames (``tower_rl.perception.orient.load_refs``; None: images used as delivered)."""
         self.bundle, self.decider, self.make_estimator = bundle, decider, make_estimator
         self.bounds = bounds
         self.hold_calls = hold_until_confident_calls
         self.log = log
         self.recorder = recorder
+        self.orient = OrientationChooser(orient_refs) if orient_refs else None
         self.reset()
 
     def reset(self):
@@ -74,6 +87,15 @@ class StudentAdapter:
         self.errors = 0
         self.clipped = 0
         self.timing: list[float] = []
+        self.seen = False   # a movable block was confidently seen on some call of the episode
+        self.blind = None   # decided when the runtime first acts: True if no movable block was confidently seen so far
+        self.confident_calls = 0
+        if self.orient is not None:
+            self.orient.reset()
+
+    @property
+    def orient_info(self) -> dict | None:
+        return self.orient.info if self.orient is not None and self.orient.decided else None
 
     def prepare(self, variant: str | None):
         """Build the estimator and runtime for ``variant`` now (after ``reset``), so the first call does not load them."""
@@ -107,6 +129,10 @@ class StudentAdapter:
             if len(imgs) < len(CAMERA_IDS) or all(not img.any() for img in imgs.values()):
                 rec["hold"] = "blank"
                 return self._done(self.hold(o["q"], o["widths"]), t0, rec, o)
+            if self.orient is not None:
+                if not self.orient.decided:
+                    rec["orient"] = self.orient.decide(self.variant, imgs)
+                imgs = self.orient.apply(imgs)
             fb = self.policy.focus_block(0)
             focus = [self.est.block_ids.index(fb)] if fb in self.est.block_ids else None
             t1 = time.time()
@@ -115,9 +141,17 @@ class StudentAdapter:
             fixed = np.asarray(self.est.fixed.cpu().numpy(), dtype=bool)
             rec.update(pos=np.round(np.asarray(pos, dtype=np.float64), 5).tolist(),
                        quat=np.round(np.asarray(quat, dtype=np.float64), 5).tolist(), conf=np.asarray(conf).tolist())
-            if self.calls <= self.hold_calls and not (conf[~fixed] >= 0.5).any():
+            confident = bool((np.asarray(conf)[~fixed] >= 0.5).any())
+            self.seen |= confident
+            self.confident_calls += confident
+            if self.calls <= self.hold_calls and not confident:
                 rec["hold"] = "unconfident"
                 return self._done(self.hold(o["q"], o["widths"]), t0, rec, o)
+            if self.blind is None:  # the runtime's first call: blind if no movable block was confidently seen so far
+                self.blind = not self.seen
+                rec["blind"] = self.blind
+                if self.blind and self.policy.spec.graph.get("blind_guard", False):
+                    self.policy.runs[0].set_blind()
             s = State(t=o["t"], step=o["step"], variant=self.variant, instruction=o["instruction"], q=o["q"].astype(np.float32),
                       width=o["widths"].astype(np.float32), block_ids=list(self.est.block_ids), block_pos=np.asarray(pos),
                       block_quat=np.asarray(quat), block_conf=np.asarray(conf))

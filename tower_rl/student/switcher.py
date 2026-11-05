@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from tower_rl.student.tokens import ARM_DIM, BLK_DIM, FEATURES, GLOB_DIM, GOAL_DIM, decode
+from tower_rl.student.tokens import ARM_DIM, BLK_DIM, DIMS, FEATURES, GLOB_DIM, GOAL_DIM, OPTION_SETS, decode
 
 N_OPT = 7
 TAKES_GOAL = (1, 1, 1, 1, 1, 0, 0)  # acquire deliver push_off insert push_home | park | idle
@@ -29,25 +29,32 @@ TOKEN_DIMS = {"blk": BLK_DIM, "goal": GOAL_DIM, "arm": ARM_DIM, "glob": GLOB_DIM
 NEG = -1e9
 
 
+def option_spec(features: str) -> tuple[int, tuple, tuple]:
+    """(number of options, takes a goal, takes an arm) of a feature version's option set (v2 adds ``repush``)."""
+    opts = OPTION_SETS[features]
+    return len(opts), tuple(int(o not in ("park", "idle")) for o in opts), tuple(int(o != "idle") for o in opts)
+
+
 class Normalizer(nn.Module):
     """Per-feature standardisation of each token type (stats over the training rows' valid tokens; std floored)."""
 
-    def __init__(self, stats: dict | None = None):
+    def __init__(self, stats: dict | None = None, dims: dict | None = None):
         super().__init__()
-        for k, d in TOKEN_DIMS.items():
+        for k, d in (dims or TOKEN_DIMS).items():
             m = torch.zeros(d) if stats is None else torch.as_tensor(stats[k]["mean"], dtype=torch.float32)
             s = torch.ones(d) if stats is None else torch.as_tensor(stats[k]["std"], dtype=torch.float32)
             self.register_buffer(f"{k}_mean", m)
             self.register_buffer(f"{k}_std", s)
 
     @staticmethod
-    def fit(data: dict, std_floor: float = 0.1) -> dict:
+    def fit(data: dict, std_floor: float = 0.1, dims: dict | None = None) -> dict:
         out = {}
-        for k in TOKEN_DIMS:
+        dims = dims or TOKEN_DIMS
+        for k in dims:
             x = data[k]
             if k in ("blk", "goal"):
                 x = x[data[f"{k}_mask"]]
-            x = x.reshape(-1, TOKEN_DIMS[k]).astype(np.float64)
+            x = x.reshape(-1, dims[k]).astype(np.float64)
             out[k] = {"mean": x.mean(0).tolist(), "std": np.maximum(x.std(0), std_floor).tolist()}
         return out
 
@@ -58,26 +65,29 @@ class Normalizer(nn.Module):
 
 class SwitcherNet(nn.Module):
     def __init__(self, d_model: int = 128, layers: int = 3, heads: int = 4, ff: int = 384, dropout: float = 0.0,
-                 stats: dict | None = None):
+                 stats: dict | None = None, features: str = FEATURES):
         super().__init__()
         d = d_model
         self.d = d
-        self.norm_in = Normalizer(stats)
-        self.p_blk, self.p_goal = nn.Linear(BLK_DIM, d), nn.Linear(GOAL_DIM, d)
-        self.p_arm, self.p_glob = nn.Linear(ARM_DIM, d), nn.Linear(GLOB_DIM, d)
+        self.features = features
+        dims = DIMS[features]
+        n_opt, takes_goal, takes_arm = option_spec(features)
+        self.norm_in = Normalizer(stats, dims)
+        self.p_blk, self.p_goal = nn.Linear(dims["blk"], d), nn.Linear(dims["goal"], d)
+        self.p_arm, self.p_glob = nn.Linear(dims["arm"], d), nn.Linear(dims["glob"], d)
         self.type_emb = nn.Parameter(torch.randn(4, d) * 0.02)
         layer = nn.TransformerEncoderLayer(d, heads, ff, dropout, batch_first=True, norm_first=True, activation="gelu")
         self.enc = nn.TransformerEncoder(layer, layers, enable_nested_tensor=False)
         self.ln = nn.LayerNorm(d)
-        self.opt_head = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, N_OPT))
-        self.opt_emb = nn.Embedding(N_OPT, d)
+        self.opt_head = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, n_opt))
+        self.opt_emb = nn.Embedding(n_opt, d)
         self.q, self.k = nn.Linear(2 * d, d), nn.Linear(d, d)
         self.null_goal = nn.Parameter(torch.zeros(d))
         self.arm_head = nn.Sequential(nn.Linear(3 * d, d), nn.GELU(), nn.Linear(d, 2))
         self.prog_head = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, 1))
         self.value_head = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, 1))
-        self.register_buffer("takes_goal", torch.tensor(TAKES_GOAL, dtype=torch.bool))
-        self.register_buffer("takes_arm", torch.tensor(TAKES_ARM, dtype=torch.bool))
+        self.register_buffer("takes_goal", torch.tensor(takes_goal, dtype=torch.bool))
+        self.register_buffer("takes_arm", torch.tensor(takes_arm, dtype=torch.bool))
 
     def encode(self, blk, blk_mask, goal, goal_mask, arm, glob):
         blk, goal, arm, glob = self.norm_in(blk, goal, arm, glob)
@@ -185,7 +195,8 @@ def export(net: SwitcherNet, path: str | Path, meta: dict) -> Path:
     sha = hashlib.sha256(path.read_bytes()).hexdigest()
     stats = {k: {"mean": getattr(net.norm_in, f"{k}_mean").tolist(), "std": getattr(net.norm_in, f"{k}_std").tolist()}
              for k in TOKEN_DIMS}
-    Path(str(path) + ".json").write_text(json.dumps({"features": FEATURES, "sha256": sha, "normalizer": stats, **meta}, indent=1))
+    Path(str(path) + ".json").write_text(json.dumps({**meta, "features": getattr(net, "features", FEATURES), "sha256": sha,
+                                                     "normalizer": stats}, indent=1))
     return path
 
 
@@ -199,13 +210,14 @@ class SwitcherDecider:
         self.mod = module
         self.meta = meta
         self.name = "switcher"
+        self.features = meta.get("features", FEATURES)  # the runtime builds its TokenTracker with this version
         self.last_progress = None
 
     @classmethod
     def load(cls, path: str | Path) -> SwitcherDecider:
         meta = json.loads(Path(str(path) + ".json").read_text())
-        if meta.get("features") != FEATURES:
-            raise ValueError(f"{path}: features {meta.get('features')} != {FEATURES}")
+        if meta.get("features") not in DIMS:
+            raise ValueError(f"{path}: features {meta.get('features')} is not one of {sorted(DIMS)}")
         mod = torch.jit.load(str(path), map_location="cpu").eval()
         return cls(mod, meta)
 
@@ -217,4 +229,4 @@ class SwitcherDecider:
                              t["valid_goal"], t["valid_arm"])
         o, g, a = (int(x) for x in out[0])
         self.last_progress = prog[0].numpy()
-        return decode(o, g, a)
+        return decode(o, g, a, self.features)

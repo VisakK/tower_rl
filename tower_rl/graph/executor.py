@@ -1083,12 +1083,62 @@ class LearnedPlaceNode(NodeBase):
         return None, [r.row()]
 
 
+PUSH_SETTLE = {  # graph "push_settle" (opt-in, Plan-v1.1 §3.1 "Plus"): true or a dict overriding these
+    "clear_m": 0.002,           # departed: the block's hull >= this far outside the foundation footprint (tower_rl.eval.mirror)
+    "confirm_calls": 5,         # ... on this many consecutive confident calls with the block at rest
+    "rest_speed": 0.02,         # m/s between confident calls
+    "over_calls": 3,            # seen over the footprint this many calls after the radial test: finish with the planned push
+    "speed_m": 0.008,           # planned push per row (v1's stalled-block hand-over)
+    "max_push_m": 0.12,         # the planned finish stops (holds) after the pinch went this far from where it started
+    "handover_along_m": None,   # (variant) hand over to the planned push this far along, before any departure test
+    "accept_rows": 40,          # not confirmed this long after the radial test: end as v1 would have (flagged "unconfirmed")
+    "follow": {},               # {"<variant>/<layer>": m}: after the radial test, keep pushing straight until the pinch went
+                                # this far along from the node's start (the demos' 0.25 m stroke on 4-3's top layer: its
+                                # blocks then stand on end and topple outward, clear of where the bottom layer lands)
+    "follow_speed_m": 0.012,    # per row during the follow-through
+    "follow_raise_m": 0.0,      # (variant) the pinch this much higher during the follow-through (clear of the top layer)
+    "edge_slow": None,          # (variant) {"along_m": a, "scale": f}: the learned push's translation x f once the block is
+                                # a out (the demos push layer 2 at ~40 mm/s, ours ~120 mm/s; blocks tip onto their side)
+    "extra_timeout_s": 6.0,
+    "extra_steps": 40,
+}
+
+REPUSH_V2 = {  # graph "repush_v2" (opt-in, the recovery node's re-push only): true or a dict overriding these
+    # camera loop 2026-10-28: a re-push starts on a block that is already out, so the radial test fired on its first row
+    # and the per-row estimate (3-5 mm clear at the base edge) confirmed it at once: 4 / 4 re-pushes in 4-2 ended
+    # after 4 rows with along 0 mm, the block still leaning (R4.1 had judged it on the rest estimates)
+    "min_push_m": 0.04,     # the planned push runs this far past its contact pose before any departure test or confirmation
+    "near_m": 0.03,         # confirmed only "flat clear" (tower_rl.eval.mirror.rest_state); not flat within this of the
+                            # footprint counts as still over it (finished by the planned push)
+    "max_total_m": 0.15,    # no further finishing once the pinch went this far past its contact pose
+    # (and on rows where the block is not seen, the re-push acts on its last confident pose: camera loop 2026-10-28, the
+    # estimator had coasted the leaning block 145 mm back towards the tower and the re-push aimed behind that pose)
+}
+
+
 class PushNode(NodeBase):
     """Task 4 push: the learned push actor (``push_env``: same observation and action processing) or, without a
     policy, a planned straight push (pipeline tests). The node ends once the target has left the tower (perceived pose,
     the evaluator-side rule) with a planned retreat upward; it fails when the rest of the tower moved (rest estimates
     beyond ``structure_mm``: the remaining tower is the "required structure"), on a sideways shove, or at the timeout.
-    The fingers stay closed into the pusher tool throughout."""
+    The fingers stay closed into the pusher tool throughout.
+
+    Graph ``push_settle`` (opt-in; official run 1: the radial departure test fired while side-row blocks still overhung
+    the foundation, and the official check judges where pushed blocks come to rest): the push runs as before until the
+    radial test fires; then it holds still, and the node ends (retreat) once the block's perceived hull is ``clear_m``
+    outside the foundation footprint on ``confirm_calls`` consecutive confident calls with the block at rest. A block
+    seen still over the footprint (``over_calls``) is finished by the planned straight push (the stalled-block hand-over
+    path, along the block's line, ``speed_m`` per row) until it is clear. A first version that handed every push over
+    to a slow planned push at 60 mm dropped blocks onto the base and dragged neighbours (D0 smoke, 2026-10-27).
+
+    The recovery node's re-push (spec ``recover``) is this settle push, planned; graph ``repush_v2`` (opt-in,
+    ``REPUSH_V2``) makes it push a minimum stroke before any test and confirm the block only "flat clear".
+
+    Graph ``depart_seen`` (opt-in; camera loop 2026-10-28): the departure test counts only rows where the target is
+    seen (confidence >= ``CONF_MIN``). The estimator coasts a block it lost while moving (up to ~0.15 m on), and the test
+    fired on that coasted pose while the block had stopped leaning on the base edge (4-2: 10 of the 12 blocks left
+    leaning). The learned push was trained to push on through such losses (its episodes end on the true departure); a
+    target lost for long after it was last seen well out still ends the push (``lost_departed``)."""
 
     def __init__(self, run, spec, s, policy: SkillPolicy | None = None):
         super().__init__(run, spec, s)
@@ -1098,11 +1148,22 @@ class PushNode(NodeBase):
         self.lat_fail = sk["push"]["lateral_fail_m"]
         self.max_steps = sk["episode_steps"]
         r = run
+        ps = r.g.get("push_settle", False)
+        rv = False
+        if spec.get("recover"):  # the recovery node's re-push (Plan-v1.1 §5): planned, confirmed clear of the footprint
+            self.pol = None
+            ps = ps or True
+            rv = r.g.get("repush_v2", False)
+        self.ps = dict(PUSH_SETTLE, **(ps if isinstance(ps, dict) else {})) if ps else None
+        self.rv = dict(REPUSH_V2, **(rv if isinstance(rv, dict) else {})) if rv else None
+        self.stroke0 = None  # repush_v2: the commanded pinch where the planned push reached its contact pose
+        self.depart_seen = bool(r.g.get("depart_seen", False))
         self.dir = torch.tensor([spec["direction"]], dtype=torch.float32, device=r.dev)
         self.layer = spec["layer"]
         self.zoff = push_geo.z_offset(self.arm, self.layer)
         bp, bq = r.block_rest(s, spec["block"])
         self.p0, self.yaw0, self.z0 = bp.clone(), geo.yaw_from_quat(bq).clone(), float(bp[0, 2])
+        self.seen_pose = (bp.clone(), bq.clone())  # repush_v2: the target's last confident pose (the rest estimate first)
         self.tower_xy = torch.stack([r.block_rest(s, b)[0][0, :2] for b in r.g["tower"]["foundation"]]).mean(0)[None]
         # the rest of the tower: movable blocks still on it (within 0.12 m of its axis), the target excluded
         self.watch = [b for b in r.g["movable"] if b != spec["block"]
@@ -1117,6 +1178,20 @@ class PushNode(NodeBase):
         self.handover, self.static_rows, self.prev_bp = False, 0, None  # learned -> planned hand-over (stalled block)
         self.lost_rows, self.last_along = 0, 0.0  # rows the target has not been seen (perceived confidence < CONF_MIN)
         r.grip[self.arm].reset(width=self.pg["tool_width_m"], closed=True)
+        if self.ps is not None:  # push_settle: the foundation footprint (rest estimates), more time for the slow push
+            from tower_rl.eval.mirror import footprint_frame
+
+            fd = [r.block_rest(s, b) for b in r.g["tower"]["foundation"]]
+            self.foot = footprint_frame(np.stack([p[0].cpu().numpy() for p, _ in fd]),
+                                        np.stack([q[0].cpu().numpy() for _, q in fd]))
+            self.spec = dict(spec, timeout_s=spec["timeout_s"] + self.ps["extra_timeout_s"])
+            self.max_steps += self.ps["extra_steps"]
+            self.departing, self.hold, self.clear_n, self.over_n, self.seen_clear = False, False, 0, 0, False
+            self.line0, self.prev_seen = None, None  # the planned push's line, the last confident pose
+            self.gap_mm, self.finish, self.depart_rows = None, False, 0
+            self.following, self.push_limit, self.step_m = False, None, self.ps["speed_m"]
+            self.pinch0 = r.ctrl[self.arm].pos.clone()  # the pinch at the node's start: travel for the follow-through
+            self.follow_m = (self.ps.get("follow") or {}).get(f"{r.g.get('variant', '')}/{self.layer}")
 
     def _moved(self, s: State) -> float:
         return max((float((self.run.block_rest(s, b)[0][0] - p).norm()) for b, p in self.watch0.items()), default=0.0)
@@ -1138,6 +1213,11 @@ class PushNode(NodeBase):
             self.info = {"why": "timeout", "moved_mm": round(self._moved(s) * 1000, 1)}
             return Status.TIMEOUT, []
         bp, bq = r.block(s, self.spec["block"])
+        if self.rv is not None:  # repush_v2: an unseen row's pose (coasted or stale) is replaced by the last confident one
+            if float(s.block_conf[s.block_ids.index(self.spec["block"])]) >= CONF_MIN:
+                self.seen_pose = (bp, bq)
+            else:
+                bp, bq = self.seen_pose
         along, lat = push_geo.progress(bp, self.p0, self.dir)
         # a policy trained with the estimator's losses (67-D, seen inputs; student plan Step 9a) acts through them;
         # older ones get the hand-coded hold below
@@ -1161,15 +1241,37 @@ class PushNode(NodeBase):
         if moved > self.spec["structure_mm"] / 1000:
             self.info = {"why": "structure", "moved_mm": round(moved * 1000, 1), "along_mm": round(float(along[0]) * 1000, 1)}
             return Status.FAILED, []
-        if bool(push_geo.departed(bp, torch.tensor([self.z0], device=r.dev), self.tower_xy)[0]):
+        radial = bool(push_geo.departed(bp, torch.tensor([self.z0], device=r.dev), self.tower_xy)[0])
+        if self.depart_seen and self.lost_rows > 0:  # this row's pose is coasted or stale: not a departure
+            radial = False
+        inj = self.spec.get("inject") or {}
+        if "stop_r_m" in inj and float((bp[0, :2] - self.tower_xy[0]).norm()) >= inj["stop_r_m"]:
+            # student data collection (opt-in): the push ends short (v1-style, no settle), the block left over the footprint
+            self.info = {"along_mm": round(float(along[0]) * 1000, 1), "lat_mm": round(float(lat[0]) * 1000, 1),
+                         "moved_mm": round(moved * 1000, 1), "steps": self.steps, "injected_stop": True}
+            self.retreat = 5
+            return self.step(s)
+        if self.ps is not None:
+            out = self._settle_step(s, bp, bq, along, lat, moved, radial)
+            if out is not None:
+                return out
+        elif radial:
             self.info = {"along_mm": round(float(along[0]) * 1000, 1), "lat_mm": round(float(lat[0]) * 1000, 1),
                          "moved_mm": round(moved * 1000, 1), "steps": self.steps}
             self.retreat = 5
             return self.step(s)
-        if abs(float(lat[0])) > self.lat_fail:
+        if abs(float(lat[0])) > self.lat_fail and not (self.ps is not None and self.departing):
             self.info = {"why": "shoved", "lat_mm": round(float(lat[0]) * 1000, 1)}
             return Status.FAILED, []
         cpw, cqw = push_geo.push_pose(bp, self.dir, arm, self.pg["contact_along_m"], self.zoff)
+        if self.ps is not None and self.pol is not None and not self.handover and self.ps["handover_along_m"] is not None \
+                and float(along[0]) >= self.ps["handover_along_m"]:
+            self.handover, self.phase, self.line0 = True, 0, bp.clone()  # (variant) the planned push from here on
+            self.info["handover_along_mm"] = round(float(along[0]) * 1000, 1)
+        if self.ps is not None and self.hold:  # departing and not finishing: keep still until the block is confirmed
+            r.command(arm, qm)
+            self.steps += 1
+            return None, [r.row()]
         if self.pol is not None and not self.handover and "handover_along_m" in self.pg:
             # the learned push never saw debris (training parks the pushed blocks away): the last block of a layer came
             # to rest on the earlier blocks' debris while still leaning on the tower (not departed) and the actor then
@@ -1198,11 +1300,28 @@ class PushNode(NodeBase):
                 at_contact = float((ctrl.pos - push_geo.push_pose(bp, self.dir, arm, self.pg["contact_along_m"] - 0.006,
                                                                   self.zoff)[0]).norm()) < 0.003
                 self.phase = 1 if (dn < 0.003 and (at_contact or not self.handover)) else 0
+                if self.phase == 1 and self.rv is not None and self.stroke0 is None:
+                    self.stroke0 = ctrl.pos.clone()
             else:
                 lat_dir = torch.stack([-self.dir[:, 1], self.dir[:, 0], torch.zeros_like(self.dir[:, 0])], -1)
-                tgt = ctrl.pos - lat_dir * ((ctrl.pos - self.p0) * lat_dir).sum(-1, keepdim=True)
+                ref = self.line0 if (self.ps is not None and self.line0 is not None) else self.p0
+                tgt = ctrl.pos - lat_dir * ((ctrl.pos - ref) * lat_dir).sum(-1, keepdim=True)
                 tgt[:, 2] = self.p0[:, 2] + self.zoff
-                ctrl.set_target(tgt + self.dir * 0.008, cqw)
+                if self.ps is not None and self.following:
+                    tgt[:, 2] += self.ps["follow_raise_m"]
+                step = 0.008
+                if self.ps is not None:
+                    step = self.step_m
+                    if self.push_limit is None:  # the finish: at most max_push_m beyond where it starts
+                        self.push_limit = float(((ctrl.pos - self.pinch0) * self.dir).sum()) + self.ps["max_push_m"]
+                        if self.rv is not None and self.stroke0 is not None:  # repush_v2: and max_total_m past contact
+                            self.push_limit = min(self.push_limit, float(((self.stroke0 - self.pinch0) * self.dir).sum())
+                                                  + self.rv["max_total_m"])
+                    if float(((ctrl.pos - self.pinch0) * self.dir).sum()) >= self.push_limit:
+                        step = 0.0  # pushed the whole stroke: hold until the block is confirmed (or lost long enough)
+                        if self.following:  # the follow-through is done: hold and confirm
+                            self.following, self.finish, self.hold = False, False, True
+                ctrl.set_target(tgt + self.dir * step, cqw)
         else:
             pb, qb = ctrl.kin.fk(qm, "pinch")
             tgt_pb, tgt_qb = base.to_base(ctrl.pos, ctrl.quat)
@@ -1227,12 +1346,86 @@ class PushNode(NodeBase):
             d = float((ctrl.pos - cpw).norm())
             sc = self.ac["pos_near_m"] + (self.ac["pos_far_m"] - self.ac["pos_near_m"]) * \
                 min(1.0, max(0.0, (d - self.ac["near_radius_m"]) / (self.ac["far_radius_m"] - self.ac["near_radius_m"])))
+            es = self.ps.get("edge_slow") if self.ps is not None else None
+            if es and float(along[0]) >= es["along_m"]:
+                sc = sc * es["scale"]
             ctrl.apply_delta(base.vec_to_world(self.ema[:, :3] * sc), base.vec_to_world(self.ema[:, 3:6] * self.ac["rot_rad"]),
                              q_meas=qm, max_lead=self.ac["max_lead_m"])
             self.prev_a = a[:, :6]
         r.command(arm, qm)
         self.steps += 1
         return None, [r.row()]
+
+
+    def _stroke(self) -> float:
+        """repush_v2: how far the commanded pinch went along the push past its contact pose (0 before it got there)."""
+        if self.stroke0 is None:
+            return 0.0
+        return float(((self.run.ctrl[self.arm].pos - self.stroke0) * self.dir).sum())
+
+    def _settle_step(self, s, bp, bq, along, lat, moved, radial):
+        """push_settle (see the class doc): after the radial test fired, hold until the block is confirmed clear of the
+        footprint, or finish it with the planned push while it is seen over the footprint. Returns the step's result
+        when the node ends here (retreat), else None (``hold`` set while waiting). ``repush_v2`` (re-push only): the
+        planned push first runs ``min_push_m`` past its contact pose, and the block is confirmed only "flat clear"."""
+        from tower_rl.eval.mirror import FLAT, gap_to_footprint, rest_state
+
+        r, ps = self.run, self.ps
+        if self.rv is not None and self._stroke() < self.rv["min_push_m"]:
+            return None
+        if not self.departing and not (radial or self.rv is not None):
+            return None
+        if not self.departing:
+            self.departing, self.hold = True, True
+            self.info["radial_along_mm"] = round(float(along[0]) * 1000, 1)
+            ctrl = r.ctrl[self.arm]
+            if self.follow_m and float(((ctrl.pos - self.pinch0) * self.dir).sum()) < self.follow_m:
+                # the follow-through: straight on from where the pinch is (no re-approach), then hold and confirm
+                self.hold, self.finish, self.following, self.handover, self.phase = False, True, True, True, 1
+                self.line0, self.push_limit, self.step_m = ctrl.pos.clone(), self.follow_m, ps["follow_speed_m"]
+                self.info["follow_m"] = self.follow_m
+        self.depart_rows += 1
+        if self.following:  # pushing on regardless of the block until the stroke is done
+            return None
+        seen = float(s.block_conf[s.block_ids.index(self.spec["block"])]) >= CONF_MIN
+        if seen:
+            p, q = bp[0].cpu().numpy(), bq[0].cpu().numpy()
+            gap = gap_to_footprint(p, q, *self.foot)
+            self.gap_mm = round(gap * 1000, 1)
+            speed = 0.0 if self.prev_seen is None else float(np.linalg.norm(p - self.prev_seen[0])) / max(
+                ROW_DT * (self.steps - self.prev_seen[1]), ROW_DT)
+            self.prev_seen = (p, self.steps)
+            if self.rv is None:
+                clear = gap >= ps["clear_m"]
+                over = not clear
+            else:  # leaning / touching / tipped next to the base: not done; tipped or on a block further out: no use pushing
+                clear = rest_state(p, q, *self.foot)[0] == FLAT
+                over = not clear and gap < self.rv["near_m"] and self._stroke() < self.rv["max_total_m"]
+            if clear:
+                self.seen_clear, self.over_n = True, 0
+                self.clear_n = self.clear_n + 1 if speed < ps["rest_speed"] else 0
+                if self.finish:  # the planned finish got it clear: stop pushing, confirm
+                    self.finish, self.hold = False, True
+            elif over:
+                self.clear_n = 0
+                self.over_n += 1
+                if self.hold and self.over_n >= ps["over_calls"]:  # still over the footprint: finish it (planned push)
+                    self.hold, self.finish, self.handover, self.phase = False, True, True, 0
+                    self.line0 = bp.clone()
+                    self.push_limit, self.step_m = None, ps["speed_m"]
+                    self.info["finish_along_mm"] = round(float(along[0]) * 1000, 1)
+            else:
+                self.clear_n = 0
+        unconfirmed = self.depart_rows > ps["accept_rows"]
+        if self.clear_n < ps["confirm_calls"] and not unconfirmed:
+            return None
+        self.info = {**{k: v for k, v in self.info.items() if k in ("handover_along_mm", "radial_along_mm", "finish_along_mm",
+                                                                    "follow_m")},
+                     "along_mm": round(float(along[0]) * 1000, 1), "lat_mm": round(float(lat[0]) * 1000, 1),
+                     "moved_mm": round(moved * 1000, 1), "steps": self.steps, "gap_mm": self.gap_mm,
+                     **({"unconfirmed": True} if self.clear_n < ps["confirm_calls"] else {})}
+        self.retreat = 5
+        return self.step(s)
 
 
 def _structure_moved(run: EnvRun, s: State, ref: dict) -> float:

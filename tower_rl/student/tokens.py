@@ -8,6 +8,13 @@ never read (tests/test_student_tokens.py). Block orientations enter only through
 Tokens per decision: ``blk`` [16, 38] (+ mask), ``goal`` [9, 88] (+ mask), ``arm`` [2, 27], ``glob`` [16], and the
 action masks ``valid_opt`` [7], ``valid_goal`` [7, 9], ``valid_arm`` [7, 9, 2] (an option without a goal keeps its arm
 mask in goal slot 0). ``TokenTracker.observe`` must see every call's state (histories: start poses, speeds, sightings).
+
+Features v2 (Plan-v1.1 §5.4, the recovery node distilled into the switcher): the v1 tokens plus, per goal, the
+contracts (``tower_rl.recovery.contracts``) judged on the runtime's rest estimates (the kind one-hot over
+``CONTRACT_KINDS``, gap / z / tilt / along / lateral / height-or-distance), whether its final stage ended ok, how far
+its block moved since and how long ago, and its recovery options so far (``goal`` [9, 106]); globally the perception
+health (share of movable blocks seen), BLIND, every goal done, and the structure's largest move (``glob`` [20]). The
+option set is ``OPTIONS_V2`` (+ ``repush``): masks [8, ...].
 """
 
 from __future__ import annotations
@@ -20,11 +27,22 @@ from tower_rl import geometry as geo
 from tower_rl.data.layouts import ALL_VARIANTS, Layout
 from tower_rl.graph.estimates import yaw_of
 from tower_rl.graph.interface import ARMS, State
-from tower_rl.student.spec import FAMILIES, GOAL_TYPES, OPTIONS, TRANSPORT, WHY
+from tower_rl.student.spec import FAMILIES, GOAL_TYPES, OPTIONS, RECOVERY_OPTIONS, RECOVERY_STAGE, TRANSPORT, WHY
 
 FEATURES = "v1"
 MAX_BLOCKS, MAX_GOALS = 16, 9
 BLK_DIM, GOAL_DIM, ARM_DIM, GLOB_DIM = 38, 88, 27, 16
+OPTIONS_V2 = OPTIONS + RECOVERY_OPTIONS
+OPTION_SETS = {"v1": OPTIONS, "v2": OPTIONS_V2}
+CONTRACT_KINDS = ("ok", "pending", "over base", "tipped", "on block", "out", "short", "unseen")
+KIND_OF = {"flat clear": "ok", "home": "ok", "in tolerance": "ok", "on tower": "pending", "on/leaning on base": "over base",
+           "touching base": "over base", "tipped": "tipped", "on a block": "on block", "off the table": "out",
+           "out": "out", "off goal": "out", "no slot": "out", "no goal": "out", "short": "short", "unseen": "unseen"}
+GOAL_EXTRA_DIM = len(CONTRACT_KINDS) + 6 + 3 + 1
+GLOB_EXTRA_DIM = 4
+DIMS = {"v1": {"blk": BLK_DIM, "goal": GOAL_DIM, "arm": ARM_DIM, "glob": GLOB_DIM},
+        "v2": {"blk": BLK_DIM, "goal": GOAL_DIM + GOAL_EXTRA_DIM, "arm": ARM_DIM, "glob": GLOB_DIM + GLOB_EXTRA_DIM}}
+FINAL_STAGE = {"transfer": "deliver", "pushdown": "push_off", "insertion": "push_home"}
 ROLES = ("source_foundation", "destination_foundation", "block", "side", "roof", "insert")
 CONF_LEVELS = (0.95, 0.5, 1e-6)  # >= 1, 0.6, 0.3, 0 (estimator levels; truth = 1)
 STATUS = ("none", "ok", "failed", "timeout")
@@ -53,9 +71,14 @@ def tilt_of(q) -> float:
 
 
 class TokenTracker:
-    """Per-episode histories behind the tokens, and the tokenizer itself."""
+    """Per-episode histories behind the tokens, and the tokenizer itself (``features`` "v1" or "v2")."""
 
-    def __init__(self, run):
+    def __init__(self, run, features: str = FEATURES):
+        assert features in DIMS, features
+        self.features = features
+        self.contracts = None   # v2: the contracts on the first call's rest estimates
+        self._last_state = None
+        self.done_at: dict[int, tuple[float, np.ndarray]] = {}  # v2: goal -> (time, rest position) its final stage ended ok
         self.run = run
         self.spec = run.spec
         lay = Layout.load(self.spec.variant)
@@ -197,7 +220,7 @@ class TokenTracker:
             elif spec.family == "pushdown":
                 geo_f = np.r_[(self.p0[i] - self.dst_c) * 10, 0.0, 0.0]
             hist = [[gm.attempts[a] / 3 for a in ARMS], [gm.tries / 3],
-                    onehot(OPTIONS.index(gm.last_option) if gm.last_option else None, 7),
+                    onehot(OPTIONS.index(RECOVERY_STAGE.get(gm.last_option, gm.last_option)) if gm.last_option else None, 7),
                     onehot(STATUS.index(gm.last_status) if gm.last_status in STATUS else 0, 4),
                     onehot(WHY.index(gm.last_why) if gm.last_why in WHY else WHY.index("other"), 11),
                     onehot(ALT.index(gm.alt), 3)]
@@ -222,24 +245,87 @@ class TokenTracker:
             holding = float(run.holding(a, s))
             f = [onehot(ai, 2), np.r_[(pp[a] - self.src_c) * 10, (pp[a] - self.dst_c) * 10], R[:, :2].T.ravel(),
                  [width[a] * 10], [float(closed[a])], [holding], [at_home], [float(am.moved_since_park)],
-                 onehot(OPTIONS.index(am.last_option) if am.last_option else None, 7), [since]]
+                 onehot(OPTIONS.index(RECOVERY_STAGE.get(am.last_option, am.last_option)) if am.last_option else None, 7), [since]]
             arm[ai] = np.concatenate([np.asarray(x, dtype=np.float32).ravel() for x in f])
 
         glob = np.concatenate([onehot(ALL_VARIANTS.index(spec.variant), 10), onehot(FAMILIES.index(spec.family), 3),
                                [(EPISODE_S - s.t) / EPISODE_S], [spec.K / MAX_GOALS], [mem.decisions / 50]]).astype(np.float32)
+        if self.features == "v2":
+            goal, glob = self._v2(view, goal, glob, conf)
         out = {"blk": blk, "blk_mask": blk_mask, "goal": goal, "goal_mask": goal_mask, "arm": arm, "glob": glob}
-        out.update(action_masks(view))
+        out.update(action_masks(view, self.features))
         return out
 
+    def _v2(self, view, goal: np.ndarray, glob: np.ndarray, conf: np.ndarray):
+        """Features v2: the contracts on the rest estimates, done / moved since, recovery options; health globally."""
+        from tower_rl.recovery.contracts import Contracts
 
-def action_masks(view) -> dict[str, np.ndarray]:
+        s, run, spec, mem = view.state, view.run, view.spec, view.memory
+        rest = [run.block_rest(s, b) for b in s.block_ids]
+        pos = np.stack([p[0].cpu().numpy() for p, _ in rest]).astype(np.float64)
+        quat = np.stack([q[0].cpu().numpy() for _, q in rest]).astype(np.float64)
+        if self.contracts is None:
+            goal_fn = None
+            if spec.family == "transfer":
+                def goal_fn(k, tk=self, s=s):
+                    gp, gyaw = tk.goal_pose(k, tk._last_state or s)
+                    return gp, gyaw
+            self.contracts = Contracts(spec, s.block_ids, pos, quat, goal_fn)
+        self._last_state = s
+        C = self.contracts
+        out = np.zeros((MAX_GOALS, DIMS["v2"]["goal"]), dtype=np.float32)
+        out[:, :GOAL_DIM] = goal
+        n_rec = {}
+        for r in mem.option_log:
+            d = r.get("decision")
+            if d is not None and d.option in RECOVERY_OPTIONS and d.goal is not None:
+                n_rec[d.goal] = n_rec.get(d.goal, 0) + 1
+        all_done = True
+        for g in spec.goals:
+            gm = mem.goals[g.k]
+            ck = C.check(g.k, pos, quat, conf)
+            kind = KIND_OF.get(ck.kind, "out")
+            if spec.family == "transfer" and not ck.ok:
+                i = s.block_ids.index(g.block)
+                if float(np.linalg.norm(pos[i] - C.pos0[i])) < 0.02:
+                    kind = "pending"
+            det = ck.detail
+            cont = [det.get("gap_mm", 0.0) / 50, det.get("z_mm", 0.0) / 50, det.get("tilt_deg", 0.0) / 90,
+                    det.get("along_mm", 0.0) / 100, det.get("lat_mm", 0.0) / 20,
+                    det.get("dz_mm", det.get("xy_mm", 0.0)) / 20]
+            done = gm.last_status == "ok" and RECOVERY_STAGE.get(gm.last_option, gm.last_option) == FINAL_STAGE[spec.family]
+            all_done &= bool(done)
+            i = s.block_ids.index(g.block)
+            if done and g.k not in self.done_at:
+                self.done_at[g.k] = (float(s.t), pos[i].copy())
+            elif not done:
+                self.done_at.pop(g.k, None)
+            moved = age = 0.0
+            if g.k in self.done_at:
+                t0, p0 = self.done_at[g.k]
+                moved = min(5.0, float(np.linalg.norm(pos[i] - p0)) * 1000 / 20)
+                age = min(1.0, (s.t - t0) / 30)
+            x = np.concatenate([onehot(CONTRACT_KINDS.index(kind), len(CONTRACT_KINDS)),
+                                np.clip(np.asarray(cont, dtype=np.float32), -5, 5), [float(done), moved, age],
+                                [n_rec.get(g.k, 0) / 2]]).astype(np.float32)
+            out[g.k, GOAL_DIM:] = x
+        mov = [s.block_ids.index(b) for b in spec.movable]
+        health = float(np.mean(conf[mov] >= 0.5)) if mov else 1.0
+        _, moved_mm = C.structure(pos, quat)
+        g2 = np.concatenate([glob, [health, float(getattr(run, "blind", False)), float(all_done), min(3.0, moved_mm / 10)]])
+        return out, g2.astype(np.float32)
+
+
+def action_masks(view, features: str = FEATURES) -> dict[str, np.ndarray]:
     """The runtime's masks (``StudentRun.valid``) as arrays: options of the family; goals < K; deliver / insert only for
-    the goal whose block the arm holds; park any arm; idle always (its goal and arm rows stay empty)."""
+    the goal whose block the arm holds; park any arm; idle always (its goal and arm rows stay empty). v2: a recovery
+    option only for a goal whose stage it repeats has run, with no arm holding a block."""
     spec = view.spec
-    vo = np.zeros(len(OPTIONS), dtype=bool)
-    vg = np.zeros((len(OPTIONS), MAX_GOALS), dtype=bool)
-    va = np.zeros((len(OPTIONS), MAX_GOALS, 2), dtype=bool)
-    for oi, o in enumerate(OPTIONS):
+    opts = OPTION_SETS[features]
+    vo = np.zeros(len(opts), dtype=bool)
+    vg = np.zeros((len(opts), MAX_GOALS), dtype=bool)
+    va = np.zeros((len(opts), MAX_GOALS, 2), dtype=bool)
+    for oi, o in enumerate(opts):
         if o not in spec.options:
             continue
         if o == "idle":
@@ -248,9 +334,14 @@ def action_masks(view) -> dict[str, np.ndarray]:
             vo[oi] = True
             va[oi, 0, :] = True
         else:
+            rec_ok = None
+            if o in RECOVERY_OPTIONS:  # the recovery node's preconditions, on the rest estimates (tower_rl.recovery.rules)
+                rec_ok = _recovery_ok(view, o)
             for k in range(spec.K):
                 for ai, a in enumerate(ARMS):
                     ok = view.holds_goal(a, k) if o in TRANSPORT else True
+                    if rec_ok is not None:
+                        ok = bool(rec_ok[k]) and a == spec.goals[k].arm
                     va[oi, k, ai] = ok
                 if o == "acquire" and getattr(view.run, "keep_delivered", False) and view.run.redo_blocked(k, view.state):
                     va[oi, k] = False  # opt-in: a delivered goal whose block has not moved (StudentRun.redo_blocked)
@@ -259,18 +350,38 @@ def action_masks(view) -> dict[str, np.ndarray]:
     return {"valid_opt": vo, "valid_goal": vg, "valid_arm": va}
 
 
-def encode(d) -> tuple[int, int, int]:
-    """A Decision as (option, goal, arm) indices; -1 where the option takes no goal / arm."""
-    oi = OPTIONS.index(d.option)
+def _recovery_ok(view, option: str) -> list[bool]:
+    """Per goal: the recovery option's preconditions hold (features v2 masks; ``repush``: ``rules.repush_ok`` on the
+    rest estimates, nothing held)."""
+    from tower_rl.recovery.rules import repush_ok
+
+    spec, run, s = view.spec, view.run, view.state
+    if option != "repush" or spec.family != "pushdown" or any(view.holding(a) for a in ARMS):
+        return [False] * spec.K
+    tok = getattr(run, "tok", None)
+    C = getattr(tok, "contracts", None) if tok is not None else None
+    if C is None:
+        return [False] * spec.K
+    rest = [run.block_rest(s, b) for b in s.block_ids]
+    pos = np.stack([p[0].cpu().numpy() for p, _ in rest]).astype(np.float64)
+    quat = np.stack([q[0].cpu().numpy() for _, q in rest]).astype(np.float64)
+    conf = np.asarray(s.block_conf, dtype=np.float64)
+    return [repush_ok(spec, view.memory, C, k, pos, quat, conf) for k in range(spec.K)]
+
+
+def encode(d, features: str = FEATURES) -> tuple[int, int, int]:
+    """A Decision as (option, goal, arm) indices; -1 where the option takes no goal / arm (features v1: a recovery option
+    as the stage it reuses, v1 has no recovery head)."""
+    oi = OPTIONS_V2.index(d.option) if features == "v2" else OPTIONS.index(RECOVERY_STAGE.get(d.option, d.option))
     gi = d.goal if d.option not in ("park", "idle") and d.goal is not None else -1
     ai = ARMS.index(d.arm) if d.arm is not None and d.option != "idle" else -1
     return oi, gi, ai
 
 
-def decode(oi: int, gi: int, ai: int):
+def decode(oi: int, gi: int, ai: int, features: str = FEATURES):
     """(option, goal, arm) indices -> Decision; an option missing its arm (or goal) decodes to idle."""
     from tower_rl.student.spec import Decision
-    o = OPTIONS[oi]
+    o = OPTION_SETS[features][oi]
     if o == "idle" or ai < 0 or (o != "park" and gi < 0):
         return Decision("idle")
     if o == "park":

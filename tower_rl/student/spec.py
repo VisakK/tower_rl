@@ -25,6 +25,11 @@ from tower_rl.graph.graph import load_graph
 from tower_rl.graph.interface import ARMS
 
 OPTIONS = ("acquire", "deliver", "push_off", "insert", "push_home", "park", "idle")
+# recovery node options (Plan-v1.1 §5; not in OPTIONS, the v1 switcher's head): run by a recovery decider (the teacher's
+# state oracle v2, the student's recovery rules); each reuses a stage's node templates with "recover" set
+RECOVERY_OPTIONS = ("repush",)
+RECOVERY_STAGE = {"repush": "push_off"}
+FAMILY_RECOVERY = {"transfer": (), "pushdown": ("repush",), "insertion": ()}
 FAMILIES = ("transfer", "pushdown", "insertion")
 FAMILY_STAGES = {"transfer": ("acquire", "deliver"), "pushdown": ("push_off",),
                  "insertion": ("acquire", "insert", "push_home")}
@@ -59,9 +64,10 @@ class Decision:
     arm: str | None = None
     park: str | None = None
     alt: bool = False
+    recovery: bool = False  # chosen by a recovery node (its own preconditions; the runtime's finished guard skips it)
 
     def __post_init__(self):
-        assert self.option in OPTIONS, self.option
+        assert self.option in OPTIONS or self.option in RECOVERY_OPTIONS, self.option
         assert self.arm is None or self.arm in ARMS, self.arm
 
 
@@ -198,8 +204,8 @@ class TaskSpec:
 
     @property
     def options(self) -> tuple[str, ...]:
-        """The option types of this family (park and idle always)."""
-        return tuple(self.stages) + ("park", "idle")
+        """The option types of this family (park and idle always; then the family's recovery options)."""
+        return tuple(self.stages) + ("park", "idle") + FAMILY_RECOVERY[self.family]
 
     def park_timeout(self) -> float:
         p = self.end_park or next(iter(self.parks_before.values()), None)
@@ -235,6 +241,13 @@ class TaskSpec:
         if d.option == "park":
             return [self.park_spec(d.arm, d.goal, d.park or "graph")]
         g = self.goals[d.goal]
+        if d.option in RECOVERY_OPTIONS:  # the stage's nodes, renamed ("_re"), flagged "recover" (planned, confirmed)
+            if RECOVERY_STAGE[d.option] not in g.stages:
+                raise ValueError(f"{self.variant}: recovery option {d.option} has no {RECOVERY_STAGE[d.option]} stage")
+            nodes = [dict(n, id=n["id"].replace(f"{PREFIX[self.family]}{g.k}_", f"{PREFIX[self.family]}{g.k}_re_", 1),
+                          recover=True, first_of_transfer=False) for n in copy.deepcopy(g.stages[RECOVERY_STAGE[d.option]])]
+            arm = d.arm or g.arm
+            return [dict(n, arm=arm) for n in nodes]
         if d.option not in g.stages:
             raise ValueError(f"{self.variant}: option {d.option} is not a stage of the {self.family} family")
         nodes = copy.deepcopy(g.stages[d.option])
