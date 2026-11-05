@@ -358,6 +358,8 @@ def _recovery_ok(view, option: str) -> list[bool]:
     spec, run, s = view.spec, view.run, view.state
     if option != "repush" or spec.family != "pushdown" or any(view.holding(a) for a in ARMS):
         return [False] * spec.K
+    if spec.graph.get("router_repush", True) is False:
+        return [False] * spec.K  # v1.3: Task 4's re-push stays with the recovery node (graph "recovery"), not the router
     tok = getattr(run, "tok", None)
     C = getattr(tok, "contracts", None) if tok is not None else None
     if C is None:

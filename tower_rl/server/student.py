@@ -100,6 +100,15 @@ class StudentModels:
         self.hold_calls = hold_until_confident_calls
         self.net = load_net(str(self.bundle / "perception" / "kp_v2.pt"), torch.device(device))
         self.decider = SwitcherDecider.load(self.bundle / "student" / "switcher.pt")
+        per = {}  # v1.3: a graph's "switcher" (a path in the bundle) overrides the bundle's switcher for that variant
+        for g in sorted((self.bundle / "graphs").glob("*.json")):
+            rel = json.loads(g.read_text()).get("switcher")
+            if rel:
+                per[g.stem] = SwitcherDecider.load(self.bundle / rel)
+        if per:
+            from tower_rl.student.switcher import VariantDeciders
+
+            self.decider = VariantDeciders(self.decider, per)
         # student_v1_1: the fixed cameras' orientation is chosen per episode against these references (absent in
         # student_v1, whose adapter uses the images as delivered)
         from tower_rl.perception.orient import load_refs

@@ -502,6 +502,16 @@ def _make_node(run: EnvRun, spec: dict, s: State):
         return LearnedGraspNode(run, spec, s, pol) if pol is not None else PlannedGraspNode(run, spec, s)
     if sk == "place_release":
         pol = run.ex.skills.get(("place_release", spec["arm"]))
+        # graph "offcentre_place": {"min_mm": m}: a block held >= m mm off-centre along its length gets the planned place
+        # (slow descent to the offset-compensated release pose, open there): official v1.2 places after such grips
+        # failed 7 / 12 (the learned place let go 2-8 cm up, or the block slid), others 1 / 110 (Studentv1_3_plan §1)
+        oc = run.g.get("offcentre_place")
+        if pol is not None and oc:
+            along = held_along_mm(run, s, spec["arm"], spec["block"])
+            if along is not None and abs(along) >= float(oc.get("min_mm", 4.0)):
+                node = PlannedPlaceNode(run, spec, s)
+                node.offcentre = True
+                return node
         return LearnedPlaceNode(run, spec, s, pol) if pol is not None else PlannedPlaceNode(run, spec, s)
     if sk == "push":
         pol = run.ex.skills.get(("push", spec["arm"]))
@@ -841,11 +851,16 @@ class LearnedGraspNode(NodeBase):
         else:  # the grip may still settle (fingers sliding on the faces); refresh_attached confirms larger shifts
             r.refresh_attached(s, arm)
         bp, bq = r.block_est(s, self.spec["block"])
-        tpb, tqb = base.to_base(bp, bq)
-        gpw, gqw = grasp_target_world(bp, bq, arm)
+        bpo = bp
+        along = (self.spec.get("inject") or {}).get("grasp_along")
+        if along:  # student data collection (opt-in): the policy sees the block this far along its length, so it grips
+            # off-centre for real; the attach (rest estimate) and the lift test keep the true pose
+            bpo = bp + float(along) * geo.quat_apply(bq, torch.tensor([[1.0, 0.0, 0.0]], device=r.dev))
+        tpb, tqb = base.to_base(bpo, bq)
+        gpw, gqw = grasp_target_world(bpo, bq, arm)
         gpb, gqb = base.to_base(gpw, gqw)
         _, ops, oqs = self._others(s)
-        near = (ops[0, :, :2] - bp[0, :2]).norm(dim=-1) < 0.2  # blocks of the same tower (as in training)
+        near = (ops[0, :, :2] - bpo[0, :2]).norm(dim=-1) < 0.2  # blocks of the same tower (as in training)
         opb, oqb = base.to_base(ops, oqs)
         tgt_pb, tgt_qb = base.to_base(ctrl.pos, ctrl.quat)
         w = torch.tensor([float(s.width[ARMS.index(arm)])], device=r.dev)
@@ -853,7 +868,7 @@ class LearnedGraspNode(NodeBase):
             pb=pb, qb=qb, prev_pb=self.prev_pb, prev_qb=self.prev_qb, dt=ROW_DT, tgt_pb=tgt_pb, tgt_qb=tgt_qb, width=w,
             closed=r.grip[arm].closed, width_cmd=r.grip[arm].width, target_pb=tpb, target_qb=tqb, grasp_pb=gpb, grasp_qb=gqb,
             other_pb=opb, other_qb=oqb, other_valid=near[None],
-            target_z_world=bp[:, 2], target_z0_world=torch.tensor([self.z0], device=r.dev), prev_actions=self.prev_a,
+            target_z_world=bpo[:, 2], target_z0_world=torch.tensor([self.z0], device=r.dev), prev_actions=self.prev_a,
             progress=torch.tensor([self.steps / self.max_steps], device=r.dev))
         self.prev_pb, self.prev_qb = pb, qb
         a = self.pol(obs).clamp(-1, 1)
@@ -909,6 +924,23 @@ def record_held_offset(r: EnvRun, s: State, arm: str, bid: str) -> dict:
     return {"grasp_offset_mm": [round(float(v) * 1000, 1) for v in d[0]], "grasp_rot_deg": round(math.degrees(float(rot[0])), 1)}
 
 
+def held_along_mm(run: EnvRun, s: State, arm: str, bid: str) -> float | None:
+    """The pinch's offset from the canonical grasp along the held block's length (mm, block frame x; the
+    ``grasp_offset_mm`` x of the grasp), or None when the arm holds no attached block ``bid``."""
+    att = run.attached[arm]
+    if att is None or att[0] != bid:
+        return None
+    pp, pq = run.pinch(s, arm)
+    bp, bq = run.block_est(s, bid)
+    d, _ = grasp_relation_error(bp, bq, pp, pq, arm)
+    return round(float(d[0, 0]) * 1000, 1)
+
+
+def _above_goal_mm(run: EnvRun, s: State, bid: str, goal_pos) -> float:
+    """Height of the block's centre above its goal centre (mm): at the release, how far the block will drop."""
+    return round((float(run.block_est(s, bid)[0][0, 2]) - float(goal_pos[0, 2])) * 1000, 1)
+
+
 class PlannedPlaceNode(NodeBase):
     """Place fallback (build file Step 6): slow descent to the release pose, open, wait, retreat, settle check."""
 
@@ -921,6 +953,9 @@ class PlannedPlaceNode(NodeBase):
         self.phase = 0
         self.k = 0
         self.post = PoseWindow()  # perceived poses of the block since the gripper opened
+        self.offcentre = False  # set by the factory: the graph's "offcentre_place" chose this node
+        self.grip_along_mm = held_along_mm(run, s, self.arm, spec["block"])
+        self.release_above_mm = None
 
     def step(self, s):
         r, arm = self.run, self.arm
@@ -950,6 +985,8 @@ class PlannedPlaceNode(NodeBase):
                 self.phase, self.k = 1, 0
                 return self.step(s)  # open in this same row (no extra row when the hold is 0)
         elif self.phase == 1:  # open and wait 0.6 s
+            if self.release_above_mm is None:
+                self.release_above_mm = _above_goal_mm(r, s, self.spec["block"], self.goal[0])
             close = False
             payload = 0.0
             r.detach(arm)
@@ -972,10 +1009,14 @@ class PlannedPlaceNode(NodeBase):
             if self.k * ROW_DT >= self.spec["settle_s"]:
                 # the median of the last second's perceived poses (a single noisy pose misjudges good places)
                 bp, bq = self.post.median(round(1.0 / ROW_DT)) if len(self.post) else s.block(self.spec["block"])
-                dxy, _, dyaw = ck.placement_error(bp, bq, *(x[0].cpu().numpy() for x in self.goal))
+                dxy, dz, dyaw = ck.placement_error(bp, bq, *(x[0].cpu().numpy() for x in self.goal))
                 r.held_offset[arm] = None
                 self.info = {"place_xy_mm": round(dxy * 1000, 2), "yaw_deg": round(dyaw, 2)}
                 ok = dxy <= self.spec["tol_pos_m"] and dyaw <= self.spec["tol_yaw_deg"]
+                if self.offcentre:  # standing in for the learned place: its verdict (height too) and its log fields
+                    ok = ok and dz <= load_yaml("skills/place_release")["place"]["tol_z_m"]
+                    self.info.update({"offcentre": True, "grip_along_mm": self.grip_along_mm,
+                                      "release_above_mm": self.release_above_mm})
                 return (Status.OK if ok else Status.FAILED), []
         r.grip[arm].step(torch.tensor([close], device=r.dev))
         r.command(arm, qm, payload=payload)
@@ -1002,6 +1043,8 @@ class LearnedPlaceNode(NodeBase):
         self.since = 0
         self.post = PoseWindow()  # perceived poses of the block since the release
         self.steps = 0
+        self.grip_along_mm = held_along_mm(run, s, self.arm, spec["block"])
+        self.release_above_mm = None  # the block's centre above its goal centre when the policy opened
 
     def step(self, s):
         r, arm = self.run, self.arm
@@ -1031,7 +1074,8 @@ class LearnedPlaceNode(NodeBase):
                 dxy, dz, dyaw = ck.placement_error(p, q, *(x[0].cpu().numpy() for x in (gp, gq)))
                 in_tol = dxy <= self.spec["tol_pos_m"] and dyaw <= self.spec["tol_yaw_deg"] and dz <= self.pl["tol_z_m"]
                 r.held_offset[arm] = None
-                self.info = {"place_xy_mm": round(dxy * 1000, 2), "yaw_deg": round(dyaw, 2), "steps": self.steps}
+                self.info = {"place_xy_mm": round(dxy * 1000, 2), "yaw_deg": round(dyaw, 2), "steps": self.steps,
+                             "grip_along_mm": self.grip_along_mm, "release_above_mm": self.release_above_mm}
                 return (Status.OK if in_tol else Status.FAILED), []
         att = r.attached[arm]
         w_jaw = r.g.get("perception", {}).get("jaw_to_goal", 0.0)
@@ -1072,6 +1116,7 @@ class LearnedPlaceNode(NodeBase):
         close = a[:, 6] > self.ac.get("grip_threshold", 0.0)
         if not self.released and not bool(close):
             self.released, self.z_release = True, float(pw[0, 2])
+            self.release_above_mm = round((float(bp[0, 2]) - float(gp[0, 2])) * 1000, 1)
             r.detach(arm)
         # payload from the gripper state before this row, as in training (PlaceReleaseEnv._payload_kg)
         r.command(arm, qm, payload=grasp_cfg_payload() if bool(r.grip[arm].closed) else 0.0)

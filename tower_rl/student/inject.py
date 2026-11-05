@@ -4,7 +4,8 @@ logged states include real drops, misplacements, knocks and shoves to recover fr
 With probability ``p_inject`` per goal option, one perturbation (``configs/student/collect.yaml`` ``inject``) is written
 into every node spec of the option as ``spec["inject"]``; the node classes apply it through opt-in hooks
 (``tower_rl.graph.executor``: shifted pre-grasp / pre-push, a drop part-way up the lift or during the held transit, a
-shifted or yawed goal, an entry offset at the slot). The decision itself is the expert's; its row's source is
+shifted or yawed goal, an entry offset at the slot, an off-centre grip). ``goals: [k, ...]`` in an option's entry
+limits that option's injection to those goals. The decision itself is the expert's; its row's source is
 "inject".
 """
 
@@ -37,12 +38,21 @@ class Injector:
     def maybe(self, d: Decision, nodes: list[dict]) -> dict | None:
         """Perturb option ``d`` (its node specs, in place) with probability ``p_inject``; returns the perturbation."""
         c = self.cfg.get(d.option)
-        if c is None or not nodes or self.rng.random() >= self.p:
+        if c is None or not nodes:
+            return None
+        if c.get("goals") is not None and d.goal not in c["goals"]:
+            return None  # targeted runs: only these goals (checked before drawing, so other options keep their draws)
+        if self.rng.random() >= self.p:
             return None
         rng = self.rng
         if d.option == "acquire":
-            inj = {"target_shift": _horizontal(rng, c["lateral_m"])} if rng.random() < 0.5 else \
-                {"drop_at_lift_m": float(rng.uniform(*c["drop_at_lift_m"]))}
+            if "grasp_along_m" in c and rng.random() < c.get("grasp_along_frac", 1.0 / 3.0):
+                # a real off-centre grip: the grasp policy aims this far along the block from its centre (v1.3: the
+                # official places after grips >= 4 mm off-centre failed 7 / 12)
+                inj = {"grasp_along": float(rng.uniform(*c["grasp_along_m"]) * rng.choice([-1.0, 1.0]))}
+            else:
+                inj = {"target_shift": _horizontal(rng, c["lateral_m"])} if rng.random() < 0.5 else \
+                    {"drop_at_lift_m": float(rng.uniform(*c["drop_at_lift_m"]))}
         elif d.option == "deliver":
             u = rng.random()
             if u < 0.4:

@@ -12,7 +12,10 @@ is killed if free GPU memory falls below ``--min-free-gb`` while the server runs
 With the endpoint down it only runs the command in its scope. Pauses count against wall-clock timeouts inside it.
 If the guard itself is killed while the command is paused, ``kill -CONT -<pgid>`` (the pid it printed) resumes it.
 
-  python3 scripts/eval_guard.py [--name official_1] [--mem 36G] [--idle-min 20] [--min-free-gb 2] -- <command ...>
+  python3 scripts/eval_guard.py [--name official_1] [--mem 36G] [--idle-min 20] [--min-free-gb 2] [--no-pause] -- <command ...>
+
+``--no-pause`` (CPU-only jobs that must keep going through an evaluation): never pause; the command still gets its own
+scope with the memory cap, nice 10 and the highest OOM-kill priority, so memory pressure cannot take the endpoint down.
 
 Ctrl-C resumes the command and passes the signal on; a second Ctrl-C kills its process group. Lines go to stdout
 and to ``results/student/logs/eval_guard.log``.
@@ -93,6 +96,7 @@ def main():
     ap.add_argument("--idle-min", type=float, default=20.0, help="resume after this long without evaluation activity")
     ap.add_argument("--min-free-gb", type=float, default=2.0, help="GPU memory the server must keep free (0: off)")
     ap.add_argument("--poll-s", type=float, default=5.0)
+    ap.add_argument("--no-pause", action="store_true", help="never pause the command (CPU-only jobs)")
     ap.add_argument("--results", default=str(REPO / "results"), help="results directory (tests use a fake one)")
     ap.add_argument("cmd", nargs=argparse.REMAINDER, help="-- <command ...>")
     args = ap.parse_args()
@@ -133,7 +137,7 @@ def main():
             pass
 
     log(f"started pid {pgid} in {unit}.scope (MemoryMax {args.mem}): {' '.join(cmd)}; "
-        f"endpoint {args.name} {'up (pid %d)' % ep.pid if ep.up() else 'down'}")
+        f"endpoint {args.name} {'up (pid %d)' % ep.pid if ep.up() else 'down'}" + ("; no pause" if args.no_pause else ""))
 
     paused, quiet_since, interrupts, last_gpu = False, None, 0, 0.0
 
@@ -155,7 +159,7 @@ def main():
     while child.poll() is None:
         now = time.time()
         opened, busy = ep.opened(), ep.busy()
-        if interrupts == 0 and ep.up() and (opened or busy):
+        if not args.no_pause and interrupts == 0 and ep.up() and (opened or busy):
             quiet_since = None
             if not paused:
                 to_group(signal.SIGSTOP)

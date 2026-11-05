@@ -106,7 +106,8 @@ class StudentAdapter:
         self.variant = variant
         self.est = self.make_estimator()
         self.est.reset(variant)
-        self.policy = StudentExecutor.from_bundle(self.bundle, variant, device="cpu", rate_hz=10, decider=self.decider)
+        decider = self.decider.for_variant(variant) if hasattr(self.decider, "for_variant") else self.decider
+        self.policy = StudentExecutor.from_bundle(self.bundle, variant, device="cpu", rate_hz=10, decider=decider)
         self.policy.reset(1, variant, [0])
 
     @staticmethod

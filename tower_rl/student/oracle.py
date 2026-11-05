@@ -121,6 +121,15 @@ class Oracle:
     def _decide_state(self, view) -> Decision:
         spec, b, mem = view.spec, self.book(view), view.memory
         self._refresh(view, b)
+        if spec.graph.get("oracle_skip_buried") and spec.family == "transfer":
+            # v1.3 (opt-in): a goal that failed and now has a block resting on its block is given up, not dug out. The
+            # oracle retries at once, so its own episodes never meet this; a student that moved on first does (official
+            # 588e8a2a: goal 1 at 5.08 mm, reworked at 141 s under two layers, blocks moved 20-53 mm)
+            _, pos = self._truth(view)
+            for g in spec.goals:
+                if not b.closed[g.k] and b.tries[g.k] > 0 and not any(view.holds_goal(a, g.k) for a in ARMS) \
+                        and not self._accessible(view, pos, g.block):
+                    b.closed[g.k] = True
         for a in ARMS:  # 6: an arm holding an open goal's block delivers it when that goal may go next
             j = mem.arms[a].holding_goal
             if j is not None and not b.closed[j] and view.holds_goal(a, j) and self._deliverable(view, b, j):
@@ -288,6 +297,9 @@ class Oracle:
             b.arm[k] = d.arm
         elif "acquire" in spec.stages and self._tilt_deg(view, pos, failed["block"]) > UNGRASPABLE_TILT_DEG:
             b.closed[k] = True  # change 7: a tilted block is not re-grasped (the grasp skill times out, 15 s a try)
+        elif spec.graph.get("oracle_skip_buried") and spec.family == "transfer" and \
+                not self._accessible(view, pos, failed["block"]):
+            b.closed[k] = True  # v1.3 (opt-in): nor is one with a block resting on it (see _decide_state)
         elif not self._can_regrasp(view, spec.goals[k]):
             b.closed[k] = True  # change 4: the prescribed arm cannot reach the re-grasp
         else:

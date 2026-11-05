@@ -230,3 +230,19 @@ class SwitcherDecider:
         o, g, a = (int(x) for x in out[0])
         self.last_progress = prog[0].numpy()
         return decode(o, g, a, self.features)
+
+
+class VariantDeciders:
+    """Per-variant switchers (v1.3): a bundle graph's ``"switcher"`` key (a path inside the bundle) names the switcher
+    for that variant; every other variant uses ``default``. The adapter asks ``for_variant`` before it builds an
+    episode's runtime, which takes the token version (``features``) from the decider it gets."""
+
+    def __init__(self, default, per_variant: dict):
+        self.default, self.per = default, dict(per_variant)
+        self.features = getattr(default, "features", None)
+
+    def for_variant(self, variant: str):
+        return self.per.get(variant, self.default)
+
+    def decide(self, view):
+        return self.for_variant(view.spec.variant).decide(view)
