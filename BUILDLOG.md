@@ -3,7 +3,7 @@
 Build instructions: `~/Documents/corl_challenge/TOWER_BUILD_INSTRUCTIONS.md` (the "build file"). One entry per session:
 what was built, acceptance numbers, deviations from the build file with reasons.
 
-## Status (updated 2026-10-28 03:10)
+## Status (updated 2026-11-05)
 
 | Step | State | Evidence |
 |---|---|---|
@@ -26,6 +26,11 @@ what was built, acceptance numbers, deviations from the build file with reasons.
 | `student_v1_1` (session 7) | **frozen and served**: orientation per episode (125 / 125 official frames), finished guard (Tasks 1-3 120 / 120 vs 1 / 120 without, noise model), 16-row idle holds, blind guard, `push_settle` (+2.1 points on Task 4, two seeds); camera loop Tasks 1-3 60 / 60 to 210 s; end to end through the server clean; endpoint `official_v1_1` port 9002 (HUMAN: Save model, Check endpoint, Queue evaluation) | "session 7", `corl_challenge/Student-v1.1.MD` |
 | Official mirror | `rehearse.py --mirror` (to 210 s, final arrangement, Task 4 rest states), `scripts/mirror_points.py`; reproduces official 4-2 LHPR exactly, 4-3 within 3.4 points | "session 7" |
 | Recovery node | contracts + rules (`tower_rl/recovery/`), teacher `oracle_state_v2` (+0.4 points on truth: remaining failures are prevention problems), student rule layer (no effect), features-v2 router (`bc_v2_r*`, DAgger) | "session 7" |
+| `student_v1_2` (session 7) | `student_v1_1` + the end-of-plan re-push rule on Task 4; two official evaluations cut off by machine resets | "session 7", "session 8" |
+| `student_v1_3` (session 8) | router `bc_v2_r3`, `offcentre_place`; every gate passed; **the final submission: official evaluation complete 2026-10-31, 100 episodes, 0 errors on the server** | "session 8", `docs/Student-v1.3.MD` |
+| Learned reaching, `student_v1_4`, `student_v1_5` (sessions 8-11) | after the deadline, never evaluated | `docs/Reacher-V3.MD`, `docs/Student-v1.4.MD` |
+| Reproduction package (session 11) | `reproduce/`: rebuilds `student_v1_3` from the public downloads, one script per stage; the training stages not rerun | `reproduce/README.md` |
+| Review handover (2026-11-05) | `eval/*` tags with the exact evaluated code, `REVIEW.md`, `reproduce/evaluated/`, `reproduce/environment/` | "2026-11-05" |
 
 Bundles: `results/bundles/teacher_t45_final` for Tasks 4 / 5 (teacher_v6 skills + learned pushes left v3 / back v1c; graphs and configs of 2026-10-20 03:52; see session 3). `teacher_v6` to run on estimated poses (graphs v5, noise-tuned grasps), `teacher_v4` for privileged use
 (DAgger labels on simulator truth: tighter in-hand rotations). Submit on the 10 Hz track.
@@ -4237,3 +4242,33 @@ Research bundle beside the final submission (`student_v1_3`, untouched); not ser
     - pytest passes. All scripts dry-run; every --flag exists (scratchpad check_flags.py).
   - Known: `eval_switcher_offline.py` cannot read v2 shards (not used). The Task 4 graphs do not recompile
     identically (gripper_closed_width changed since): ship the JSON.
+
+## 2026-11-05 (review handover)
+
+The organizers asked the provisional top five for a technical report, the exact evaluated code, checkpoints and agent records,
+for verification before final rankings. This entry covers the repository; the report, checkpoints, logs and agent records went to
+the reviewers privately. `REVIEW.md` is the entry point.
+
+- **Team overall is per variant.** The leaderboard takes each team's highest-LHPR result per variant across eligible submissions,
+  "including incomplete submissions" (its README and `scoring.js`), so `student_v1`, `student_v1_2` and `student_v1_3` are all covered.
+- **No commit existed for any evaluated code:** the servers ran from `tower_rl_snapshots/server_v1*`, and the bundle MANIFESTs say
+  `f5e8cce` with `git_dirty`. Now tags, built from the snapshots with a temporary index: `eval/student_v1` `862244d`,
+  `eval/student_v1_2` `5db8b5d`, `eval/student_v1_3` `79203a6`. `git archive` of each against its snapshot differs only by the three added
+  files (`assets_m/tower_station_m.json`, `.gitignore`, `README.md`) and the snapshot's symlinks.
+- **A clean clone could not serve:** every episode reads `assets_m/tower_station_m.json`, which was git-ignored (13 perception tests failed on a clean
+  clone for the same reason). The tags and `main` now include it. Fresh clone without `data/`: 198 passed, 8 skipped.
+- **Serving needs neither Isaac nor the kit.** Import closure: torch, torchvision, numpy, scipy, cv2, PyYAML, msgpack, websockets
+  (`reproduce/environment/requirements-inference.txt`).
+- **Checked from clean clones, all three tags, in the evaluated environment and in a clean `uv` venv with only those packages:** served with the
+  published tar and the recorded flags; `probe_server.py` 10 / 10, with blank images and with organizer episodes streamed through it; artifact identity on
+  the wire equal to the official one; `run.json` equal to the official one apart from pid, times, argv and paths; `strace` shows no read from the
+  development repository. About 2 GB of GPU memory.
+- **Replay against the official logs:** the saved first-call frames of all 100 `student_v1_3` episodes through the tag and bundle: 1,100 block poses,
+  median 0.04 mm and p99 0.87 mm from the logged poses (the frames were saved as JPEG), orientation the same in 100 / 100, repeats exact.
+- **CPU regression:** `reproduce/6_checks.sh cpu` on the v1.3 bundle gives mirror points 80.09 and 77.56, equal to the original gates.
+- **Serving-path audit against the snapshot:** no recorded action sequence is replayed or used as a label, nothing is keyed on seed or trial, no LLM
+  client in any tag. Official v1.3 from the server's logs: 100 episodes, 39,328 calls, 210,630 rows, 0 errors, 0 clipped values, 0 guard vetoes, 0 blind
+  episodes, 4 rule-based re-pushes (all 4-2), 11 of 198 places after grips of 4 mm or more.
+- **Site retries:** the author used the site's "Retry failed episodes" during `student_v1`'s evaluation. Our logs show its later passes on 10-27, not which click started each.
+- New here: `REVIEW.md`, `reproduce/evaluated/` (serving script, verbatim official scripts and `run.json` files), `reproduce/environment/`, `reproduce/manifests/student_v1_2.json`,
+  and the two specification documents the README cites. No change to `tower_rl/`, `configs/` or existing `scripts/`, so the parity run stands.

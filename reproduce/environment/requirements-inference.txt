@@ -1,0 +1,14 @@
+# The packages the policy server imports, at the versions of the environment that served the official evaluations.
+# Isaac Sim and Isaac Lab are not needed to serve. torch and torchvision came from different CUDA indexes in that
+# environment (cu126, cu128); torchvision only supplies the ResNet-34 definition here.
+--extra-index-url https://download.pytorch.org/whl/cu126
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.7.0+cu126
+torchvision==0.22.0+cu128
+numpy==1.26.0
+scipy==1.15.3
+opencv-python-headless==4.11.0.86
+PyYAML==6.0.2
+msgpack==1.1.2
+websockets==15.0.1
+pillow==11.3.0

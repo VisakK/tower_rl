@@ -1,0 +1,30 @@
+{
+ "started": "2026-10-30T06:08:24",
+ "pid": 19527,
+ "argv": [
+  "scripts/serve_student.py",
+  "--track",
+  "data/challenge/track.json",
+  "--bundle",
+  "/home/visakii/Documents/tower_rl/results/bundles/student_v1_3",
+  "--name",
+  "official_v1_3",
+  "--port",
+  "9004",
+  "--policy_id",
+  "tower-student-v1-3",
+  "--plugin_version",
+  "2"
+ ],
+ "bundle": "/home/visakii/Documents/tower_rl/results/bundles/student_v1_3",
+ "artifact_identity": "sha256:76ec7f3d35c4da7b41dc74c26ce2f8484287f87cc4023f3820dc4145a0c8263d",
+ "policy_id": "tower-student-v1-3",
+ "plugin_version": "2",
+ "camera_source": "evaluator",
+ "reconnect": true,
+ "track": "data/challenge/track.json",
+ "track_version": "20261013-v1-task45-10hz-reconnect",
+ "inference_timeout_s": 180,
+ "episode_wall_timeout_s": 7200,
+ "load_s": 2.0
+}

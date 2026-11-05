@@ -5,7 +5,9 @@ ten task variants, the 10 Hz track. The organizers evaluated it on 2026-10-31 (1
 It was served as policy `tower-student-v1-3` with artifact identity
 `sha256:76ec7f3d35c4da7b41dc74c26ce2f8484287f87cc4023f3820dc4145a0c8263d`, the sha256 of its bundle tar.
 
-This guide rebuilds it from the public downloads with the scripts in this directory. The model weights are not in the
+To serve the evaluated submissions as they ran, without rebuilding anything, see [`REVIEW.md`](../REVIEW.md).
+
+This guide rebuilds `student_v1_3` from the public downloads with the scripts in this directory. The model weights are not in the
 repository; every one of them is trained here. The scripts reproduce the original runs: the same scripts, configs,
 seeds, run chains and checkpoint picks. GPU reinforcement learning and network training are not bit-exact, so a
 rebuild gives an equivalent policy, not the same bytes (§10).
@@ -39,15 +41,17 @@ The raw notes of all eleven build sessions are in [`BUILDLOG.md`](../BUILDLOG.md
 - **Isaac Sim 5.1.0 + Isaac Lab 2.3.0**, pip install, Python 3.11. This brings PyTorch and rsl_rl. The versions used:
   - isaacsim 5.1.0.0, isaaclab 0.50.5;
   - rsl-rl-lib 3.1.2;
-  - torch 2.7.0+cu126, torchvision 0.22.0;
-  - opencv-python 4.11.0, h5py 3.15.1, huggingface_hub, pyyaml, pytest.
+  - torch 2.7.0+cu126, torchvision 0.22.0+cu128;
+  - opencv-python-headless 4.11.0.86, h5py 3.15.1, huggingface_hub, pyyaml, pytest.
+  - The full list and the machine: [`environment/`](environment).
 - **Claude Code (Anthropic)**: only to redo the *agentic development*, i.e. writing code and editing task graphs from
   rehearsal feedback (§4.1). Rerunning this pipeline does not need it: everything it produced is committed, and no
   step calls Claude or the Anthropic API.
-- **To serve the policy:**
-  - the challenge kit (`data/challenge/kit/`);
+- **To serve the policy:** Isaac is not needed, only [these packages](environment/requirements-inference.txt).
   - `data/challenge/track.json`, downloaded from the challenge site after sign-in;
+  - `assets_m/tower_station_m.json`, which is in git (stage 1 rebuilds it);
   - optionally `cloudflared`, for a public `wss://` URL.
+  - The challenge kit is not read at run time: its `tower_protocol.py` is vendored in `tower_rl/server/`.
 
 **Hardware used.**
 - One NVIDIA RTX A5000 (24 GB), 24 CPU threads, 62 GB RAM.
@@ -59,7 +63,8 @@ The raw notes of all eleven build sessions are in [`BUILDLOG.md`](../BUILDLOG.md
   `PYTHON=<that environment's python>`.
 - Each script prints every command before running it. `DRY_RUN=1 reproduce/<script>` only prints.
 - Outputs go to `data/` and `results/`; both are git-ignored.
-- Pure-Python tests, no Isaac: `python -m pytest`.
+- Pure-Python tests, no Isaac: `python -m pytest`. A fresh clone without `data/` gives 198 passed, 8 skipped; with stage 1's data,
+  314 passed, 3 skipped.
 
 ## 2. Overview
 
@@ -349,9 +354,10 @@ images. The site flow and our endpoint tooling (watcher, guards, tunnel scripts)
 - **The v1 router rounds** (`bc_r2`) ran on older code: 15 modules have changed since. This does not matter for v1.3
   (§6, step 4).
 
-**Not shipped**
+**Not in this repository**
 - The weights, and every run output: checkpoints, datasets, rehearsal records.
-- The Claude Code session transcripts, which are only on the development machine.
+- The Claude Code session transcripts.
+- The challenge reviewers received the evaluated bundles, the evaluation logs and sanitized transcripts privately.
 
 **Known issues**
 - `scripts/eval_switcher_offline.py` reads shards with features v1 only, so it fails on v2 data. The pipeline does not
@@ -381,4 +387,6 @@ Both freeze with `build_v1_4.sh` from `student_v1_3` and `configs/reach/teacher_
 | `scripts/` | training, rehearsal, data, freezing, serving; `scripts/official/`: tools for the official runs |
 | `configs/` | physics, scene, tiers, layouts, skills, student, reach |
 | `reproduce/manifests/` | the MANIFESTs of the bundles as built: every file's sha256 and the freeze arguments |
+| `reproduce/evaluated/` | serving an evaluated submission from its `eval/*` tag; the scripts that served the official runs |
+| `reproduce/environment/` | package versions, the machine, challenge and data revisions |
 | `docs/` | write-ups (copies of the session documents; paths in them refer to the development machine) |

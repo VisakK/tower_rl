@@ -1,0 +1,309 @@
+{
+ "station": "/home/visakii/Documents/tower_rl/data/TOWER-Assets/station/station.usdz",
+ "wrapper": "/home/visakii/Documents/tower_rl/assets_m/tower_station_m.usda",
+ "unreset_prims": [
+  "/PNP_DUALD1200_STATION/StationModel/StaticCurtains",
+  "/PNP_DUALD1200_STATION/StationModel/StationLighting",
+  "/PNP_DUALD1200_STATION/StationModel/InstalledRobots",
+  "/PNP_DUALD1200_STATION/StationModel/InstalledRobots/StandA_Robot",
+  "/PNP_DUALD1200_STATION/StationModel/InstalledRobots/StandB_Robot"
+ ],
+ "arms": {
+  "left": {
+   "prim": "/TowerStation/Model/StationModel/InstalledRobots/StandA_Robot/NeroRobotWithWristCamera",
+   "root_joint_rels": {
+    "physics:body0": [],
+    "physics:body1": [
+     "/PNP_DUALD1200_STATION/StationModel/InstalledRobots/StandA_Robot/NeroRobotWithWristCamera/world"
+    ],
+    "proxyPrim": []
+   },
+   "world": {
+    "pos_m": [
+     -0.1165,
+     -0.288,
+     0.0
+    ],
+    "quat_wxyz": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ],
+    "world_scale": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "base_link": {
+    "pos_m": [
+     -0.1165,
+     -0.288,
+     0.0
+    ],
+    "quat_wxyz": [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ],
+    "world_scale": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "prismatic_limits_m": {
+    "gripper": [
+     0.0,
+     0.10000000149011612
+    ],
+    "gripper_joint1": [
+     -0.009999999776482582,
+     0.05999999865889549
+    ],
+    "gripper_joint2": [
+     -0.05999999865889549,
+     0.009999999776482582
+    ]
+   },
+   "finger_physics_material": null
+  },
+  "back": {
+   "prim": "/TowerStation/Model/StationModel/InstalledRobots/StandB_Robot/NeroRobotWithWristCamera",
+   "root_joint_rels": {
+    "physics:body0": [],
+    "physics:body1": [
+     "/PNP_DUALD1200_STATION/StationModel/InstalledRobots/StandB_Robot/NeroRobotWithWristCamera/world"
+    ],
+    "proxyPrim": []
+   },
+   "world": {
+    "pos_m": [
+     0.381,
+     -0.774,
+     0.0
+    ],
+    "quat_wxyz": [
+     -0.7071068,
+     0.0,
+     0.0,
+     0.7071068
+    ],
+    "world_scale": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "base_link": {
+    "pos_m": [
+     0.381,
+     -0.774,
+     0.0
+    ],
+    "quat_wxyz": [
+     -0.7071068,
+     0.0,
+     0.0,
+     0.7071068
+    ],
+    "world_scale": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "prismatic_limits_m": {
+    "gripper": [
+     0.0,
+     0.10000000149011612
+    ],
+    "gripper_joint1": [
+     -0.009999999776482582,
+     0.05999999865889549
+    ],
+    "gripper_joint2": [
+     -0.05999999865889549,
+     0.009999999776482582
+    ]
+   },
+   "finger_physics_material": null
+  }
+ },
+ "cameras": {
+  "low_camera": {
+   "pos_m": [
+    -0.151475,
+    -0.878254,
+    0.956252
+   ],
+   "quat_wxyz_usd_camera": [
+    0.394022,
+    -0.0941787,
+    -0.366368,
+    0.8376464
+   ],
+   "focal_length": 18.0,
+   "h_aperture": 18.974422454833984,
+   "v_aperture": 14.230816841125488,
+   "clipping_range": [
+    1.0,
+    3000.0
+   ]
+  },
+  "high_camera": {
+   "pos_m": [
+    0.875459,
+    -0.034802,
+    0.558189
+   ],
+   "quat_wxyz_usd_camera": [
+    0.8332407,
+    -0.3619385,
+    0.1605031,
+    -0.3859394
+   ],
+   "focal_length": 18.0,
+   "h_aperture": 18.979419708251953,
+   "v_aperture": 14.234564781188965,
+   "clipping_range": [
+    1.0,
+    3000.0
+   ]
+  },
+  "left_wrist": {
+   "path": "/TowerStation/Model/StationModel/InstalledRobots/StandA_Robot/NeroRobotWithWristCamera/gripper_base/WristCameraMount/camera_stand_link/d435_camera_link/camera_link/camera_color_frame/camera_color_optical_frame/wrist_camera",
+   "local_xform_ops": [
+    "xformOp:translate",
+    "xformOp:orient",
+    "xformOp:scale",
+    "xformOp:transform:dualWristIoUCalibration"
+   ],
+   "pose_in_gripper_base_m": [
+    0.063237,
+    0.013355,
+    0.037498
+   ],
+   "quat_in_gripper_base_wxyz": [
+    0.0551368,
+    0.6800356,
+    0.7194067,
+    0.1302517
+   ],
+   "focal_length": 19.891992568969727,
+   "h_aperture": 20.954999923706055,
+   "v_aperture": 15.72365665435791,
+   "clipping_range": [
+    0.009999999776482582,
+    100.0
+   ]
+  },
+  "back_wrist": {
+   "path": "/TowerStation/Model/StationModel/InstalledRobots/StandB_Robot/NeroRobotWithWristCamera/gripper_base/WristCameraMount/camera_stand_link/d435_camera_link/camera_link/camera_color_frame/camera_color_optical_frame/wrist_camera",
+   "local_xform_ops": [
+    "xformOp:translate",
+    "xformOp:orient",
+    "xformOp:scale",
+    "xformOp:transform:dualWristIoUCalibration"
+   ],
+   "pose_in_gripper_base_m": [
+    0.074173,
+    -0.002982,
+    0.038903
+   ],
+   "quat_in_gripper_base_wxyz": [
+    0.1261778,
+    0.6923517,
+    0.7006221,
+    0.1177157
+   ],
+   "focal_length": 19.891992568969727,
+   "h_aperture": 20.954999923706055,
+   "v_aperture": 15.72365665435791,
+   "clipping_range": [
+    0.009999999776482582,
+    100.0
+   ]
+  }
+ },
+ "tabletop_collider_aabb_m": [
+  [
+   0.0,
+   -0.6600000313483179,
+   -0.025000001187436283
+  ],
+  [
+   0.9600000455975533,
+   0.0,
+   0.0
+  ]
+ ],
+ "robot": {
+  "left": {
+   "wrapper": "/home/visakii/Documents/tower_rl/assets_m/nero_left_station_m.usda",
+   "prismatic_limits_m": {
+    "gripper": [
+     0.0,
+     0.10000000149011612
+    ],
+    "gripper_joint1": [
+     -0.009999999776482582,
+     0.05999999865889549
+    ],
+    "gripper_joint2": [
+     -0.05999999865889549,
+     0.009999999776482582
+    ]
+   },
+   "link1_pos_m": [
+    0.0,
+    0.0,
+    0.138
+   ]
+  },
+  "back": {
+   "wrapper": "/home/visakii/Documents/tower_rl/assets_m/nero_back_station_m.usda",
+   "prismatic_limits_m": {
+    "gripper": [
+     0.0,
+     0.10000000149011612
+    ],
+    "gripper_joint1": [
+     -0.009999999776482582,
+     0.05999999865889549
+    ],
+    "gripper_joint2": [
+     -0.05999999865889549,
+     0.009999999776482582
+    ]
+   },
+   "link1_pos_m": [
+    0.0,
+    0.0,
+    0.138
+   ]
+  }
+ },
+ "block": {
+  "wrapper": "/home/visakii/Documents/tower_rl/assets_m/tower_block_station_m.usda",
+  "aabb_m": [
+   [
+    -0.07500000298023224,
+    -0.02500000037252903,
+    -0.014999999664723873
+   ],
+   [
+    0.07500000298023224,
+    0.02500000037252903,
+    0.014999999664723873
+   ]
+  ],
+  "mass": 0.10559999942779541,
+  "friction_static_dynamic": [
+   0.4000000059604645,
+   0.23000000417232513
+  ]
+ }
+}

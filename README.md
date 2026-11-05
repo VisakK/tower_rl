@@ -3,6 +3,9 @@
 Isaac Lab recreation of the [TOWER CoRL 2026 challenge](https://challenge.tower-benchmark.com/docs/) evaluator
 (two AgileX Nero arms, Jenga towers) as the base for a reinforcement-learning approach.
 
+**Reviewing the submissions:** [`REVIEW.md`](REVIEW.md) lists what was evaluated, the exact code (`eval/*` tags), how to
+serve each submission, and how this branch differs from what ran.
+
 **Reproducing the submission:** [`reproduce/README.md`](reproduce/README.md) rebuilds `student_v1_3`, the evaluated
 submission. It trains the teacher, distils the student, freezes the bundle and serves it, one script per stage. The
 design write-ups are in [`docs/`](docs).
@@ -16,8 +19,8 @@ source <your Isaac Lab venv>/bin/activate   # Isaac Sim 5.1.0 (pip) + Isaac Lab 
 cd <this repository>
 ```
 
-`data/`, `assets_m/` and `results/` are not in git. On a fresh clone, download the assets, the dataset metadata and
-three example episodes (non-image arrays only, ~5 s each), then build the meter-unit wrappers:
+`data/`, `results/` and `assets_m/` are not in git, apart from `assets_m/tower_station_m.json`, which the server reads (its
+camera calibration). On a fresh clone, download the assets, the dataset metadata and three example episodes (non-image arrays only, ~5 s each), then build the meter-unit wrappers:
 
 ```bash
 python -I -c "
@@ -107,7 +110,7 @@ python scripts/validate_isaaclab_scene.py --headless --enable_cameras --mode ren
 
 ## Agentic teacher (privileged)
 
-Built from `~/Documents/corl_challenge/TOWER_BUILD_INSTRUCTIONS.md`; progress, acceptance numbers and every deviation
+Built from [`docs/TOWER_BUILD_INSTRUCTIONS.md`](docs/TOWER_BUILD_INSTRUCTIONS.md); progress, acceptance numbers and every deviation
 are in `BUILDLOG.md`. The teacher is a typed graph of skill calls per variant (`tower_rl/graph/graphs/*.json`)
 interpreted by a deterministic executor: planned transits and parks (IK + gravity-sag compensation), and two
 contact skills, `grasp_lift` and `place_release`, trained with PPO on privileged critics but camera-estimable actor
@@ -291,9 +294,9 @@ python scripts/check_camera_model.py --episode data/subset/<v>/<stem>.npz --fram
     --out results/perception/calib/<name>   # projected recorded poses on organizer JPEGs: shift ~(0, 0)
 ```
 
-## Student (learned decision layer; in progress)
+## Student (learned decision layer)
 
-Plan: `~/Documents/corl_challenge/Student-distillation-plan.MD`; progress and gate numbers: BUILDLOG "session 5". The
+Plan: [`docs/Student-distillation-plan.MD`](docs/Student-distillation-plan.MD); progress and gate numbers: BUILDLOG "session 5". The
 student replaces the executor's graph pointer by a learned option switcher over the executor's own node classes:
 `tower_rl/student/spec.py` (goals and option node templates per variant, from the graph JSONs), `runtime.py` (option
 loop, runtime memory, mechanical rules, `ShadowPolicy`), `oracle.py` (graph mode = the executor's decisions exactly;
@@ -325,16 +328,17 @@ python scripts/rehearse.py ... --student <switcher.pt> --beta 0.5 --collect resu
 # finger effort override (Step 0.3 grip check): --finger_effort 3 [--graph_set '{"gripper_closed_width": 0.0425}']
 ```
 
-Queues used in session 5 (each runs from a frozen copy of the code under `~/Documents/tower_rl_snapshots/`):
-`results/student/{gpu_queue_camera_teacher,cpu_queue_grip_check,cpu_queue_parity_g3a,cpu_queue_parity_g3b,
-cpu_queue_round0,cpu_queue_eval,cpu_queue_dagger}.sh`.
+Session 5 ran these commands from queue scripts under `results/student/`, each on a frozen copy of the code
+(`scripts/make_snapshot.sh`). `results/` is not in git; [`reproduce/`](reproduce) has the steps in script form.
 
 ### Serving the student to the challenge (`tower-infer-v1`, plan Step 11)
 
 `tower_rl/server/`: `tower_protocol.py` is the starter kit's codec and spec helpers (verbatim), `handler.py` the kit's
 session machinery with one model state per evaluation session (reset clears it; it survives reconnects), `student.py`
 the bundle behind it (MANIFEST-checked, kp_v2 on the GPU, the switcher) and the logs. The kit
-(`data/challenge/tower-policy-example.zip`) and `track.json` (all ten tasks, 10 Hz) come from the challenge site.
+(`data/challenge/tower-policy-example.zip`) and `track.json` (all ten tasks, 10 Hz) come from the challenge site; only
+`track.json` is read at run time. Serving does not need Isaac: see
+[`reproduce/environment/versions.md`](reproduce/environment/versions.md).
 
 ```bash
 # serve a frozen bundle (artifact_identity = the bundle tar's sha256); logs under results/student/server/<name>/
@@ -348,8 +352,9 @@ python scripts/probe_server.py ws://127.0.0.1:9001 --track data/challenge/track.
 python scripts/serve_student.py --track data/challenge/track.json --camera_source render --port 9011 --name ws_loop &
 python scripts/ws_loop.py --headless --device cpu --variant task2-2_cross_tower_transfer_2 --tiers D0 D1 --episodes 4 \
     --num_envs 2 --seed 7000 --track data/challenge/track.json --url ws://127.0.0.1:9011 --out_root results/student/ws_loop/<name>
-# the official endpoint: server + Cloudflare quick tunnel in tmux session "tower" (prints the wss:// model URL)
-results/student/serve_official.sh <name>        # stop: results/student/stop_official.sh
+# the official endpoint: server + Cloudflare quick tunnel in tmux session "tower" (prints the wss:// model URL). These two
+# scripts hold the development machine's paths: they are the record of what ran, not portable; see reproduce/evaluated/
+reproduce/evaluated/official/serve_official.sh <name>        # stop: reproduce/evaluated/official/stop_official.sh
 # episodes from the server's side (ran to the 210 s limit, or ended early), next to a local run's successes
 python scripts/server_episodes.py results/student/server/<name> --since <ISO time> --track data/challenge/track.json \
     --compare results/student/closed_loop/student_v1_kp_v2 --episodes
@@ -367,7 +372,7 @@ python3 scripts/eval_guard.py --name <name> [--mem 36G] [--idle-min 20] [--min-f
 `student_v1_1` is `student_v1`'s networks with opt-in runtime changes set in its graphs (`idle_chunk: 16`,
 `blind_guard`, `finished_guard`, `push_settle`) and the fixed cameras' per-episode orientation
 (`perception/orient_refs.npz`, `tower_rl/perception/orient.py`); every flag is off by default (teacher and parity
-unchanged). `corl_challenge/Student-v1.1.MD` has the results.
+unchanged). [`docs/Student-v1.1.MD`](docs/Student-v1.1.MD) has the results.
 
 ```bash
 # orientation references from the dataset's first frames, checked on every official first frame of a server run
@@ -380,8 +385,8 @@ python scripts/mirror_points.py <out_root> [--by_case]      # TSR / LHPR / ODR, 
 # a code snapshot for long jobs and servers; a second official endpoint beside official_1
 scripts/make_snapshot.sh <name>
 PORT=9002 SESSION=tower_v1_1 SNAP=~/Documents/tower_rl_snapshots/server_v1_1 BUNDLE=$PWD/results/bundles/student_v1_1 \
-    EXTRA="--policy_id tower-student-v1-1 --plugin_version 2" results/student/serve_official.sh official_v1_1
-SESSION=tower_v1_1 results/student/stop_official.sh
+    EXTRA="--policy_id tower-student-v1-1 --plugin_version 2" reproduce/evaluated/official/serve_official.sh official_v1_1
+SESSION=tower_v1_1 reproduce/evaluated/official/stop_official.sh
 ```
 
 ### The recovery node (Plan-v1.1 §5)
@@ -394,8 +399,7 @@ on its estimates), or the switcher with features v2 (`tower_rl/student/tokens.py
 
 ```bash
 python scripts/recovery_review.py <out_root>   # decisions by rule, abstentions by cause, failures no rule touched
-results/v1_1/cpu_collect_v2.sh <snapshot> <round> <episodes per variant> <seed> <decider> [beta] [parallel]
-results/v1_1/cpu_v2_pipeline.sh <snapshot> <round-0 log>    # BC, a DAgger round, BC, the comparison with bc_r2
+# the original collection and training queues ran from results/v1_1/ (not in git); reproduce/4_student.sh has the same steps
 ```
 
 ## Development
